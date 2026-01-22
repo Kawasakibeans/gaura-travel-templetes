@@ -7,11 +7,16 @@ ini_set('display_errors', 1);
 
 require_once(dirname(__FILE__, 5) . '/wp-config.php');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    echo "Database connection failed";
-    exit;
-}
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// $mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+// if ($mysqli->connect_error) {
+//     echo "Database connection failed";
+//     exit;
+// }
+// ============================================================================
 
 /**
  * Make end date inclusive: [start, end+1d)
@@ -19,7 +24,14 @@ if ($mysqli->connect_error) {
 $startDate = $_GET['start_date'] ?? date('Y-m-01');
 $endDate   = $_GET['end_date']   ?? date('Y-m-t');
 
-$startBound = $mysqli->real_escape_string($startDate) . ' 00:00:00';
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// $startBound = $mysqli->real_escape_string($startDate) . ' 00:00:00';
+// $endBound   = date('Y-m-d', strtotime($endDate . ' +1 day')) . ' 00:00:00';
+// ============================================================================
+
+$startBound = $startDate . ' 00:00:00';
 $endBound   = date('Y-m-d', strtotime($endDate . ' +1 day')) . ' 00:00:00';
 
 /**
@@ -35,51 +47,164 @@ function slug_col($label) {
 }
 
 /**
+ * Keep only escalation types that actually appear in the filtered data.
+ * This recreates the "dynamic columns per date range" behavior.
+ */
+function filterEscalationTypesByData(array $types, array $data): array {
+    if (empty($data)) {
+        return []; // No data in range => no dynamic columns
+    }
+
+    // Map base types by slug to label for de-duping
+    $baseSlugToLabel = [];
+    foreach ($types as $type) {
+        $baseSlugToLabel[slug_col($type)] = $type;
+    }
+
+    // Slug => label for any type that actually appears in data
+    $includedBySlug = [];
+
+    // First pass: keep original order of provided types, but only if counts > 0
+    foreach ($data as $row) {
+        if (!is_array($row)) { continue; }
+        foreach ($types as $type) {
+            $alias = 'type_' . slug_col($type);
+            if (!empty($row[$alias])) {
+                $slug = slug_col($type);
+                $includedBySlug[$slug] = $baseSlugToLabel[$slug];
+            }
+        }
+    }
+
+    // Second pass: catch any type_* columns returned by API that were not in $types
+    foreach ($data as $row) {
+        if (!is_array($row)) { continue; }
+        foreach ($row as $key => $val) {
+            if (strpos($key, 'type_') === 0 && (int)$val > 0) {
+                $alias = substr($key, 5); // remove "type_"
+                // Normalize alias to slug to avoid duplicates (e.g., uppercase vs title-case)
+                $slug = slug_col(str_replace('_', ' ', $alias));
+                if (!isset($includedBySlug[$slug])) {
+                    $label = str_replace('_', ' ', strtoupper($alias));
+                    $includedBySlug[$slug] = $label;
+                }
+            }
+        }
+    }
+
+    // Preserve the original order of $types; append extra labels sorted
+    // To match the original template (distinct types ordered ASC), sort all included labels alphabetically
+    $filtered = array_values($includedBySlug);
+    natcasesort($filtered);
+    return array_values($filtered);
+}
+
+/**
  * Fetch distinct escalation types limited to date range
  */
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// $escalationTypes = [];
+// $typeSql = "
+//   SELECT DISTINCT escalation_type
+//   FROM wpk4_backend_travel_escalations
+//   WHERE escalation_type IS NOT NULL AND escalation_type <> ''
+//     AND escalated_on >= '$startBound' AND escalated_on < '$endBound'
+//   ORDER BY escalation_type ASC
+// ";
+// if ($typeResult = $mysqli->query($typeSql)) {
+//     while ($row = $typeResult->fetch_assoc()) {
+//         $escalationTypes[] = $row['escalation_type'];
+//     }
+// }
+// ============================================================================
+
+// Escalation types will be fetched from the main API call along with data
+// This matches the original behavior where types are dynamically determined from the date range
 $escalationTypes = [];
-$typeSql = "
-  SELECT DISTINCT escalation_type
-  FROM wpk4_backend_travel_escalations
-  WHERE escalation_type IS NOT NULL AND escalation_type <> ''
-    AND escalated_on >= '$startBound' AND escalated_on < '$endBound'
-  ORDER BY escalation_type ASC
-";
-if ($typeResult = $mysqli->query($typeSql)) {
-    while ($row = $typeResult->fetch_assoc()) {
-        $escalationTypes[] = $row['escalation_type'];
-    }
-}
 
 /**
  * AJAX: details for a given user, honoring date filter
  */
 if (isset($_GET['action']) && $_GET['action'] === 'get_escalation_details' && isset($_GET['user'])) {
-    $user = $mysqli->real_escape_string($_GET['user']);
+    $user = sanitize_text_field($_GET['user']);
 
     // Accept explicit start/end for modal (fallback to page bounds)
     $sd = $_GET['start_date'] ?? $startDate;
     $ed = $_GET['end_date']   ?? $endDate;
-    $sdBound = $mysqli->real_escape_string($sd) . ' 00:00:00';
-    $edBound = date('Y-m-d', strtotime($ed . ' +1 day')) . ' 00:00:00';
 
-    $query = "
-        SELECT 
-            escalated_by,
-            escalation_type,
-            escalated_on,
-            DATE_FORMAT(escalated_on, '%Y-%m-%d %H:%i:%s') AS formatted_time
-        FROM wpk4_backend_travel_escalations
-        WHERE escalated_by = '$user'
-          AND escalated_on >= '$sdBound' AND escalated_on < '$edBound'
-        ORDER BY escalated_on DESC
-    ";
-
-    $result = $mysqli->query($query);
+    // ============================================================================
+    // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+    // ============================================================================
+    // $user = $mysqli->real_escape_string($_GET['user']);
+    // $sdBound = $mysqli->real_escape_string($sd) . ' 00:00:00';
+    // $edBound = date('Y-m-d', strtotime($ed . ' +1 day')) . ' 00:00:00';
+    // 
+    // $query = "
+    //     SELECT 
+    //         escalated_by,
+    //         escalation_type,
+    //         escalated_on,
+    //         DATE_FORMAT(escalated_on, '%Y-%m-%d %H:%i:%s') AS formatted_time
+    //     FROM wpk4_backend_travel_escalations
+    //     WHERE escalated_by = '$user'
+    //       AND escalated_on >= '$sdBound' AND escalated_on < '$edBound'
+    //     ORDER BY escalated_on DESC
+    // ";
+    // 
+    // $result = $mysqli->query($query);
+    // $details = [];
+    // if ($result) {
+    //     while ($row = $result->fetch_assoc()) {
+    //         $details[] = $row;
+    //     }
+    // }
+    // ============================================================================
+    
+    // Fetch escalation details for user from API
+    $api_url = API_BASE_URL;
+    $url = API_BASE_URL . '/escalations-agentwise/user/' . urlencode($user);
+    $params = [];
+    if (!empty($sd)) {
+        $params['start_date'] = $sd;
+    }
+    if (!empty($ed)) {
+        $params['end_date'] = $ed;
+    }
+    if (!empty($params)) {
+        $url .= '?' . http_build_query($params);
+    }
+    
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 0,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'GET',
+    ));
+    
+    $response = curl_exec($curl);
+    curl_close($curl);
+    
+    $responseData = json_decode($response, true);
     $details = [];
-    if ($result) {
-        while ($row = $result->fetch_assoc()) {
-            $details[] = $row;
+    
+    if (isset($responseData['status']) && $responseData['status'] === 'success' && isset($responseData['data'])) {
+        // Service returns array directly, which is wrapped in 'data' by jsonResponse
+        // jsonResponse wraps it: {status: "success", data: [...]}
+        if (is_array($responseData['data'])) {
+            // Check if it's an array of detail records (has numeric keys)
+            $keys = array_keys($responseData['data']);
+            if (!empty($keys) && (is_numeric($keys[0]) || isset($responseData['data'][0]))) {
+                $details = $responseData['data'];
+            } elseif (isset($responseData['data']['details']) && is_array($responseData['data']['details'])) {
+                $details = $responseData['data']['details'];
+            }
         }
     }
 
@@ -94,10 +219,15 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_escalation_details' && is
               </tr></thead><tbody>';
 
         foreach ($details as $row) {
+            // Handle both database format and API format
+            $formatted_time = $row['formatted_time'] ?? $row['escalated_on'] ?? '';
+            $escalated_by = $row['escalated_by'] ?? '';
+            $escalation_type = $row['escalation_type'] ?? '';
+            
             echo '<tr class="detail-row">';
-            echo '<td>' . htmlspecialchars($row['formatted_time']) . '</td>';
-            echo '<td>' . htmlspecialchars($row['escalated_by']) . '</td>';
-            echo '<td>' . htmlspecialchars($row['escalation_type']) . '</td>';
+            echo '<td>' . htmlspecialchars($formatted_time) . '</td>';
+            echo '<td>' . htmlspecialchars($escalated_by) . '</td>';
+            echo '<td>' . htmlspecialchars($escalation_type) . '</td>';
             echo '</tr>';
         }
 
@@ -109,34 +239,92 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_escalation_details' && is
 /**
  * Data: grouped by escalated_by with dynamic type columns
  */
-function fetchEscalationDataByUser(mysqli $mysqli, string $startBound, string $endBound): array {
-    global $escalationTypes;
+function fetchEscalationDataByUser(string $startBound, string $endBound): array {
+    global $escalationTypes, $startDate, $endDate;
 
-    $parts = ["SELECT COALESCE(escalated_by, '(unknown)') AS escalated_by"];
-
-    foreach ($escalationTypes as $type) {
-        $escapedType = $mysqli->real_escape_string($type);
-        $alias = 'type_' . slug_col($type);
-        $parts[] = ", SUM(CASE WHEN escalation_type = '$escapedType' THEN 1 ELSE 0 END) AS `{$alias}`";
-    }
-
-    $parts[] = ", COUNT(*) AS total_escalations";
-    $parts[] = "FROM wpk4_backend_travel_escalations";
-    $parts[] = "WHERE escalated_on >= '$startBound' AND escalated_on < '$endBound'";
-    $parts[] = "GROUP BY escalated_by";
-    $parts[] = "ORDER BY escalated_by ASC";
-
-    $sql = implode("\n", $parts);
+    // ============================================================================
+    // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+    // ============================================================================
+    // $parts = ["SELECT COALESCE(escalated_by, '(unknown)') AS escalated_by"];
+    // 
+    // foreach ($escalationTypes as $type) {
+    //     $escapedType = $mysqli->real_escape_string($type);
+    //     $alias = 'type_' . slug_col($type);
+    //     $parts[] = ", SUM(CASE WHEN escalation_type = '$escapedType' THEN 1 ELSE 0 END) AS `{$alias}`";
+    // }
+    // 
+    // $parts[] = ", COUNT(*) AS total_escalations";
+    // $parts[] = "FROM wpk4_backend_travel_escalations";
+    // $parts[] = "WHERE escalated_on >= '$startBound' AND escalated_on < '$endBound'";
+    // $parts[] = "GROUP BY escalated_by";
+    // $parts[] = "ORDER BY escalated_by ASC";
+    // 
+    // $sql = implode("\n", $parts);
+    // $data = [];
+    // if ($res = $mysqli->query($sql)) {
+    //     while ($row = $res->fetch_assoc()) {
+    //         $data[] = $row;
+    //     }
+    // }
+    // return $data;
+    // ============================================================================
+    
+    // Use original startDate and endDate for API (not the bounds which have +1 day for endBound)
+    // API expects original dates and will handle the [start, end+1d) range internally
+    // $startBound and $endBound are only used for old database queries
+    
+    // Fetch escalation data from API
+    $api_url = API_BASE_URL;
+    $url = API_BASE_URL . '/escalations-agentwise';
+    $params = [
+        'start_date' => $startDate,
+        'end_date' => $endDate
+    ];
+    $url .= '?' . http_build_query($params);
+    
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 0,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'GET',
+    ));
+    
+    $response = curl_exec($curl);
+    curl_close($curl);
+    
+    $responseData = json_decode($response, true);
     $data = [];
-    if ($res = $mysqli->query($sql)) {
-        while ($row = $res->fetch_assoc()) {
-            $data[] = $row;
+    
+    if (isset($responseData['status']) && $responseData['status'] === 'success' && isset($responseData['data'])) {
+        // Extract escalation types from API response
+        if (isset($responseData['data']['escalation_types']) && is_array($responseData['data']['escalation_types'])) {
+            $escalationTypes = $responseData['data']['escalation_types'];
+        }
+        
+        // API returns data.data (array of rows) - Service returns ['data' => $data, 'escalation_types' => ...]
+        // jsonResponse wraps it: {status: "success", data: {data: [...], escalation_types: [...]}}
+        if (isset($responseData['data']['data']) && is_array($responseData['data']['data'])) {
+            $data = $responseData['data']['data'];
+        } elseif (isset($responseData['data']) && is_array($responseData['data'])) {
+            // Check if responseData['data'] is directly an array of rows (has numeric keys)
+            $keys = array_keys($responseData['data']);
+            if (!empty($keys) && (is_numeric($keys[0]) || (isset($responseData['data'][0]) && is_array($responseData['data'][0])))) {
+                $data = $responseData['data'];
+            }
         }
     }
+    
     return $data;
 }
 
-$data_users = fetchEscalationDataByUser($mysqli, $startBound, $endBound);
+$data_users = fetchEscalationDataByUser($startBound, $endBound);
+// Filter escalation types based on actual data (dynamic columns per date range)
+$escalationTypes = filterEscalationTypesByData($escalationTypes, $data_users);
 
 /**
  * Render table
@@ -162,8 +350,9 @@ function renderEscalationTableByUser(array $data, string $title): void {
         $grandTotal = 0;
 
         foreach ($data as $row) {
-            $user = $row['escalated_by'];
-            echo "<tr><td><a href='#' class='user-link' data-user='" . htmlspecialchars($user, ENT_QUOTES) . "'>" . htmlspecialchars($user) . "</a></td>";
+            if (!is_array($row)) { continue; }
+            $user = $row['escalated_by'] ?? '(unknown)';
+            echo "<tr><td><a href='#' class='user-link' data-user='" . htmlspecialchars((string)$user, ENT_QUOTES) . "'>" . htmlspecialchars((string)$user) . "</a></td>";
 
             $rowTotal = 0;
             foreach ($escalationTypes as $type) {

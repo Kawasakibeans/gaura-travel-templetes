@@ -18152,7 +18152,8 @@ const passengerOptions = filteredPassengers.map(pxv => {
 
 			return (
 				amadeusFirstName === localFullName &&
-				amadeusSurname === localSurname
+				amadeusSurname === localSurname &&
+				amadeusDob === localDob
 			);
 		});
 	});

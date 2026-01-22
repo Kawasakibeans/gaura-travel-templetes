@@ -1,5 +1,4 @@
 <?php
-
 /**
  * Template Name: Manage Malpractice Call Audit
  * Template Post Type: post, page
@@ -10,15 +9,409 @@
  * @subpackage Twenty_Twenty
  * @since Twenty Twenty 1.0
  */
-get_header();
+
+require_once($_SERVER['DOCUMENT_ROOT'].'/wp-load.php');
 
 date_default_timezone_set("Australia/Melbourne");
 error_reporting(E_ALL);
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1';
+
+global $wpdb, $current_user;
+
+wp_get_current_user();
+$current_username = $current_user->user_login ?? 'system';
+
+// Check if this is an API request
+$is_api_request = false;
+$request_uri = $_SERVER['REQUEST_URI'] ?? '';
+$path = parse_url($request_uri, PHP_URL_PATH);
+$path_parts = array_filter(explode('/', trim($path, '/')));
+$path_parts = array_values($path_parts);
+
+// Check if path contains API indicators
+for ($i = 0; $i < count($path_parts); $i++) {
+    if ($path_parts[$i] === 'audit' && isset($path_parts[$i + 1]) && $path_parts[$i + 1] === 'malpractice-calls') {
+        $is_api_request = true;
+        break;
+    }
+}
+
+// If API request, handle it and exit
+if ($is_api_request) {
+    header('Content-Type: application/json');
+    
+    // Helper functions
+    function sendResponse($status, $data = null, $message = null, $code = 200) {
+        http_response_code($code);
+        echo json_encode([
+            'status' => $status,
+            'data' => $data,
+            'message' => $message
+        ]);
+        exit;
+    }
+    
+    function sendError($message, $code = 500) {
+        sendResponse('error', null, $message, $code);
+    }
+    
+    $method = $_SERVER['REQUEST_METHOD'];
+    
+    // Extract record ID from path
+    $record_id = null;
+    for ($i = 0; $i < count($path_parts); $i++) {
+        if ($path_parts[$i] === 'malpractice-calls' && isset($path_parts[$i + 1]) && is_numeric($path_parts[$i + 1])) {
+            $record_id = intval($path_parts[$i + 1]);
+            break;
+        }
+    }
+    
+    try {
+        // GET /v1/audit/malpractice-calls - List call audit records
+        if ($method === 'GET' && $record_id === null) {
+            $where = [];
+            $whereValues = [];
+            $whereFormats = [];
+            
+            // Campaign filter
+            if (!empty($_GET['campaign'])) {
+                $where[] = "LOWER(campaign) LIKE %s";
+                $whereValues[] = '%' . strtolower(trim($_GET['campaign'])) . '%';
+                $whereFormats[] = '%s';
+            }
+            
+            // Agent name filter
+            if (!empty($_GET['agent_name'])) {
+                $where[] = "LOWER(agent_name) LIKE %s";
+                $whereValues[] = '%' . strtolower(trim($_GET['agent_name'])) . '%';
+                $whereFormats[] = '%s';
+            }
+            
+            // Call date filter
+            if (!empty($_GET['call_date'])) {
+                $where[] = "call_date LIKE %s";
+                $whereValues[] = '%' . trim($_GET['call_date']) . '%';
+                $whereFormats[] = '%s';
+            }
+            
+            // Recording file no filter
+            if (!empty($_GET['recording_file_no'])) {
+                $where[] = "recording_file_no LIKE %s";
+                $whereValues[] = '%' . trim($_GET['recording_file_no']) . '%';
+                $whereFormats[] = '%s';
+            }
+            
+            // Original Query:
+            // SELECT * FROM wpk4_backend_malpractice_audit
+            // WHERE [filters based on query parameters]
+            // ORDER BY id DESC
+            // LIMIT 40
+            
+            $sql = "SELECT * FROM {$wpdb->prefix}backend_malpractice_audit";
+            
+            if (!empty($where)) {
+                $sql .= " WHERE " . implode(" AND ", $where);
+            }
+            
+            $sql .= " ORDER BY id DESC LIMIT 40";
+            
+            if (!empty($whereValues)) {
+                $prepared = $wpdb->prepare($sql, $whereValues);
+                $results = $wpdb->get_results($prepared, ARRAY_A);
+            } else {
+                $results = $wpdb->get_results($sql, ARRAY_A);
+            }
+            
+            // Format results
+            $formatted_results = [];
+            foreach ($results as $row) {
+                $formatted_results[] = [
+                    'id' => intval($row['id']),
+                    'call_type' => $row['call_type'],
+                    'telephone' => $row['telephone'],
+                    'cc' => $row['cc'],
+                    'campaign' => $row['campaign'],
+                    'agent_name' => $row['agent_name'],
+                    'status' => $row['status'],
+                    'additional_status' => $row['additonal_status'],
+                    'call_date' => $row['call_date'],
+                    'call_time' => $row['call_time'],
+                    'time_connect' => $row['time_connect'],
+                    'time_acw' => $row['time_acw'],
+                    'recording_file_no' => $row['recording_file_no'],
+                    'observation' => $row['observation'],
+                    'added_by' => $row['added_by'] ?? ''
+                ];
+            }
+            
+            sendResponse('success', $formatted_results, 'Call audit records retrieved successfully');
+        }
+        
+        // GET /v1/audit/malpractice-calls/{id} - Get single record
+        if ($method === 'GET' && $record_id !== null) {
+            // Original Query:
+            // SELECT * FROM wpk4_backend_malpractice_audit 
+            // WHERE id = :id
+            
+            $row = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT * FROM {$wpdb->prefix}backend_malpractice_audit WHERE id = %d",
+                    $record_id
+                ),
+                ARRAY_A
+            );
+            
+            if (!$row) {
+                sendError('Record not found', 404);
+            }
+            
+            $formatted_result = [
+                'id' => intval($row['id']),
+                'call_type' => $row['call_type'],
+                'telephone' => $row['telephone'],
+                'cc' => $row['cc'],
+                'campaign' => $row['campaign'],
+                'agent_name' => $row['agent_name'],
+                'status' => $row['status'],
+                'additional_status' => $row['additonal_status'],
+                'call_date' => $row['call_date'],
+                'call_time' => $row['call_time'],
+                'time_connect' => $row['time_connect'],
+                'time_acw' => $row['time_acw'],
+                'recording_file_no' => $row['recording_file_no'],
+                'observation' => $row['observation'],
+                'added_by' => $row['added_by'] ?? ''
+            ];
+            
+            sendResponse('success', $formatted_result, 'Call audit record retrieved successfully');
+        }
+        
+        // POST /v1/audit/malpractice-calls - Create call audit record
+        if ($method === 'POST' && $record_id === null) {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            // Validate required fields
+            $required = ['cc', 'telephone', 'call_type', 'campaign', 'agent_name', 'status', 'additional_status', 'call_date', 'call_time', 'time_connect', 'time_acw', 'recording_file_no'];
+            $data = [];
+            foreach ($required as $field) {
+                if (empty($input[$field])) {
+                    sendError("Field '{$field}' is required", 400);
+                }
+                $data[$field] = trim($input[$field]);
+            }
+            
+            // Optional fields
+            $data['observation'] = isset($input['observation']) ? trim($input['observation']) : '';
+            
+            // Original Query:
+            // INSERT INTO wpk4_backend_malpractice_audit 
+            // (telephone, call_type, campaign, agent_name, status, additonal_status, call_date, 
+            //  call_time, time_connect, time_acw, recording_file_no, observation, cc, added_by)
+            // VALUES 
+            // (:telephone, :call_type, :campaign, :agent_name, :status, :additional_status, :call_date,
+            //  :call_time, :time_connect, :time_acw, :recording_file_no, :observation, :cc, :added_by)
+            
+            $result = $wpdb->insert(
+                $wpdb->prefix . 'backend_malpractice_audit',
+                [
+                    'telephone' => $data['telephone'],
+                    'call_type' => $data['call_type'],
+                    'campaign' => $data['campaign'],
+                    'agent_name' => $data['agent_name'],
+                    'status' => $data['status'],
+                    'additonal_status' => $data['additional_status'],
+                    'call_date' => $data['call_date'],
+                    'call_time' => $data['call_time'],
+                    'time_connect' => $data['time_connect'],
+                    'time_acw' => $data['time_acw'],
+                    'recording_file_no' => $data['recording_file_no'],
+                    'observation' => $data['observation'],
+                    'cc' => $data['cc'],
+                    'added_by' => $current_username
+                ],
+                ['%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s']
+            );
+            
+            if ($result === false) {
+                sendError('Failed to create record: ' . $wpdb->last_error, 500);
+            }
+            
+            sendResponse('success', ['id' => $wpdb->insert_id, 'message' => 'Call audit record created successfully'], 'Call audit record created successfully', 201);
+        }
+        
+        // PATCH /v1/audit/malpractice-calls/{id} - Update call audit record
+        if ($method === 'PATCH' && $record_id !== null) {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            $updateData = [];
+            $updateFormats = [];
+            
+            // All fields are optional for update
+            if (isset($input['cc'])) {
+                $updateData['cc'] = trim($input['cc']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['telephone'])) {
+                $updateData['telephone'] = trim($input['telephone']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['call_type'])) {
+                $updateData['call_type'] = trim($input['call_type']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['campaign'])) {
+                $updateData['campaign'] = trim($input['campaign']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['agent_name'])) {
+                $updateData['agent_name'] = trim($input['agent_name']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['status'])) {
+                $updateData['status'] = trim($input['status']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['additional_status'])) {
+                $updateData['additonal_status'] = trim($input['additional_status']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['call_date'])) {
+                $updateData['call_date'] = trim($input['call_date']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['call_time'])) {
+                $updateData['call_time'] = trim($input['call_time']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['time_connect'])) {
+                $updateData['time_connect'] = trim($input['time_connect']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['time_acw'])) {
+                $updateData['time_acw'] = trim($input['time_acw']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['recording_file_no'])) {
+                $updateData['recording_file_no'] = trim($input['recording_file_no']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['observation'])) {
+                $updateData['observation'] = trim($input['observation']);
+                $updateFormats[] = '%s';
+            }
+            
+            if (empty($updateData)) {
+                sendError('At least one field must be provided for update', 400);
+            }
+            
+            $updateData['added_by'] = $current_username;
+            $updateFormats[] = '%s';
+            
+            // Original Query:
+            // UPDATE wpk4_backend_malpractice_audit 
+            // SET telephone = :telephone,
+            //     call_type = :call_type,
+            //     call_date = :call_date,
+            //     campaign = :campaign,
+            //     agent_name = :agent_name,
+            //     status = :status,
+            //     additonal_status = :additional_status,
+            //     time_connect = :time_connect,
+            //     time_acw = :time_acw,
+            //     recording_file_no = :recording_file_no,
+            //     observation = :observation,
+            //     cc = :cc,
+            //     added_by = :added_by
+            // WHERE id = :id
+            
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_malpractice_audit',
+                $updateData,
+                ['id' => $record_id],
+                $updateFormats,
+                ['%d']
+            );
+            
+            if ($result === false) {
+                sendError('Failed to update record: ' . $wpdb->last_error, 500);
+            }
+            
+            sendResponse('success', ['message' => 'Call audit record updated successfully'], 'Call audit record updated successfully');
+        }
+        
+        // DELETE /v1/audit/malpractice-calls/{id} - Delete call audit record
+        if ($method === 'DELETE' && $record_id !== null) {
+            // Original Query:
+            // DELETE FROM wpk4_backend_malpractice_audit 
+            // WHERE id = :id
+            
+            $result = $wpdb->delete(
+                $wpdb->prefix . 'backend_malpractice_audit',
+                ['id' => $record_id],
+                ['%d']
+            );
+            
+            if ($result === false) {
+                sendError('Failed to delete record: ' . $wpdb->last_error, 500);
+            }
+            
+            if ($result === 0) {
+                sendError('Record not found', 404);
+            }
+            
+            sendResponse('success', ['message' => 'Call audit record deleted successfully'], 'Call audit record deleted successfully');
+        }
+        
+        // Route not found
+        sendError('Endpoint not found', 404);
+        
+    } catch (Exception $e) {
+        sendError($e->getMessage(), $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500);
+    }
+}
+
+// Continue with original template code for HTML output
+get_header();
+
 include("wp-config-custom.php");
 
-$query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='$ip_address'";
-$result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
-$is_ip_matched = mysqli_num_rows($result_ip_selection);
+// Create mysqli connection for backward compatibility with legacy code
+// NOTE: This is ONLY for compatibility - all new code should use $wpdb
+if (class_exists('mysqli') && !isset($mysqli)) {
+    // Get database credentials from WordPress config
+    $db_host = DB_HOST;
+    $db_user = DB_USER;
+    $db_password = DB_PASSWORD;
+    $db_name = DB_NAME;
+    
+    // Extract host and port if needed
+    $host_parts = explode(':', $db_host);
+    $db_hostname = $host_parts[0];
+    $db_port = isset($host_parts[1]) ? $host_parts[1] : 3306;
+    
+    // Create mysqli connection for legacy code compatibility
+    $mysqli = @new mysqli($db_hostname, $db_user, $db_password, $db_name, $db_port);
+    
+    if ($mysqli->connect_errno) {
+        // If mysqli connection fails, set to null
+        $mysqli = null;
+    }
+}
+
+// Original Query:
+// SELECT * FROM wpk4_backend_ip_address_checkup WHERE ip_address = ?
+$query_ip_selection = $wpdb->prepare(
+    "SELECT * FROM {$wpdb->prefix}backend_ip_address_checkup WHERE ip_address = %s",
+    $ip_address
+);
+$result_ip_selection = $wpdb->get_results($query_ip_selection, ARRAY_A);
+$is_ip_matched = count($result_ip_selection);
 ?>
 <html>
 <head>
@@ -304,7 +697,7 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
 </head>
 <body>
     <?php
-    if (mysqli_num_rows($result_ip_selection) > 0)
+    if (count($result_ip_selection) > 0)
     {
         global $current_user;
         $currnt_userlogn = $current_user->user_login;
@@ -395,57 +788,52 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
                     </tr>
                 </thead>
                 <?php
-                $query = "SELECT * FROM wpk4_backend_malpractice_audit WHERE";
-
-                if ( isset($_GET['campaign']) && $_GET['campaign'] != '' ) 
-                {
-                    $campaign = $_GET['campaign'];
-                    $campaign_sq = " LOWER(campaign) LIKE '%$campaign%' AND";
-                    $query = $query . $campaign_sq;
-                } 
-                else 
-                {
-                    $campaign_sq = "id!='TEST_DMP_ID' AND ";
+                // Original Query: (dynamic query based on filters)
+                // SELECT * FROM wpk4_backend_malpractice_audit WHERE [filters] ORDER BY id DESC LIMIT [limit]
+                
+                // Build WHERE conditions safely using $wpdb->prepare()
+                $where = [];
+                $where_values = [];
+                
+                if (isset($_GET['campaign']) && $_GET['campaign'] != '') {
+                    $campaign = trim($_GET['campaign']);
+                    $where[] = "LOWER(campaign) LIKE %s";
+                    $where_values[] = '%' . strtolower($campaign) . '%';
                 }
-
-                if ( isset($_GET['agent_name']) && $_GET['agent_name'] != '' )
-                {
-                    $agent_name = $_GET['agent_name'];
-                    $agent_name_sq = " LOWER(agent_name) LIKE '%$agent_name%' AND";
-                    $query = $query . $agent_name_sq;
-                } 
-                else
-                {
-                    $agent_name_sq = "id!='TEST_DMP_ID' AND ";
+                
+                if (isset($_GET['agent_name']) && $_GET['agent_name'] != '') {
+                    $agent_name = trim($_GET['agent_name']);
+                    $where[] = "LOWER(agent_name) LIKE %s";
+                    $where_values[] = '%' . strtolower($agent_name) . '%';
                 }
-
-                if ( isset($_GET['call_date']) && $_GET['call_date'] != '' ) {
-                    $call_date = $_GET['call_date'];
-                    $call_date_sq = " call_date LIKE '%$call_date%' AND";
-                    $query = $query . $call_date_sq;
+                
+                if (isset($_GET['call_date']) && $_GET['call_date'] != '') {
+                    $call_date = trim($_GET['call_date']);
+                    $where[] = "call_date LIKE %s";
+                    $where_values[] = '%' . $call_date . '%';
+                }
+                
+                if (isset($_GET['recording_file_no']) && $_GET['recording_file_no'] != '') {
+                    $recording_file_no = trim($_GET['recording_file_no']);
+                    $where[] = "recording_file_no LIKE %s";
+                    $where_values[] = '%' . $recording_file_no . '%';
+                }
+                
+                // Build query
+                $limit = (isset($_GET['campaign']) || isset($_GET['agent_name']) || isset($_GET['call_date']) || isset($_GET['recording_file_no'])) ? 40 : 10;
+                
+                if (!empty($where)) {
+                    $sql = "SELECT * FROM {$wpdb->prefix}backend_malpractice_audit WHERE " . implode(' AND ', $where) . " ORDER BY id DESC LIMIT " . intval($limit);
+                    $query = $wpdb->prepare($sql, $where_values);
                 } else {
-                    $call_date_sq = "id!='TEST_DMP_ID' AND ";
+                    $query = "SELECT * FROM {$wpdb->prefix}backend_malpractice_audit ORDER BY id DESC LIMIT " . intval($limit);
                 }
+                
+                $results = $wpdb->get_results($query, ARRAY_A);
 
-                if ( isset($_GET['recording_file_no']) && $_GET['recording_file_no'] != '' ) {
-                    $recording_file_no = $_GET['recording_file_no'];
-                    $recording_file_no_sq = " recording_file_no LIKE '%$recording_file_no%' ";
-                    $query = $query . $call_date_sq;
-                } else {
-                    $recording_file_no_sq = "id!='TEST_DMP_ID' ";
-                }
-
-                if (isset($_GET['campaign']) || isset($_GET['agent_name']) || isset($_GET['call_date']) || isset($_GET['recording_file_no']) ) {
-                    $query = "SELECT * FROM wpk4_backend_malpractice_audit where $campaign_sq $agent_name_sq $call_date_sq $recording_file_no_sq order by id DESC limit 40";
-                } else {
-                    $query = "SELECT * FROM wpk4_backend_malpractice_audit order by id DESC limit 10";
-                }
-
-                $result = $mysqli->query($query);
-
-                if ($result->num_rows > 0) 
+                if (!empty($results)) 
                 {
-                    while ($row = $result->fetch_assoc()) 
+                    foreach ($results as $row) 
                     {
                         echo "<tbody>";
                         echo "<tr>";
@@ -471,7 +859,6 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
                     echo "<tbody></tbody>";
                     echo "<div class='no-records-found'> No Records found.</div>";
                 }
-                $mysqli->close();
                 ?>
             </table>
             <script>
@@ -511,19 +898,57 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
                     $recording_file_no = $_POST['recording_file_no'];
                     $observation = $_POST['observation'];
                     
-                    $sql = "UPDATE wpk4_backend_malpractice_audit SET telephone  = '$telephone',  call_type  = '$call_type', call_date= '$call_date'  ,campaign  = '$campaign',  agent_name  = '$agent_name',  status  = '$status',  additonal_status  = '$additonal_status',  time_connect  = '$time_connect',  time_acw  = '$time_acw',  recording_file_no  = '$recording_file_no',  observation  = '$observation', cc = '$cc', added_by='$currnt_userlogn' WHERE id=$id";
+                    // Original Query:
+                    // UPDATE wpk4_backend_malpractice_audit 
+                    // SET telephone = :telephone, call_type = :call_type, call_date = :call_date,
+                    //     campaign = :campaign, agent_name = :agent_name, status = :status,
+                    //     additonal_status = :additional_status, time_connect = :time_connect,
+                    //     time_acw = :time_acw, recording_file_no = :recording_file_no,
+                    //     observation = :observation, cc = :cc, added_by = :added_by
+                    // WHERE id = :id
+                    
+                    $result = $wpdb->update(
+                        $wpdb->prefix . 'backend_malpractice_audit',
+                        [
+                            'telephone' => trim($telephone),
+                            'call_type' => trim($call_type),
+                            'call_date' => trim($call_date),
+                            'campaign' => trim($campaign),
+                            'agent_name' => trim($agent_name),
+                            'status' => trim($status),
+                            'additonal_status' => trim($additonal_status),
+                            'time_connect' => trim($time_connect),
+                            'time_acw' => trim($time_acw),
+                            'recording_file_no' => trim($recording_file_no),
+                            'observation' => trim($observation),
+                            'cc' => trim($cc),
+                            'added_by' => $current_username
+                        ],
+                        ['id' => intval($id)],
+                        ['%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s'],
+                        ['%d']
+                    );
 
-                    if ($mysqli->query($sql) === TRUE) {
+                    if ($result !== false) {
                         echo '<script> showAlert("Updated data sucsessfully"); window.location.href="?"</script>';
                     } else {
-                        echo "Error updating record: " . $mysqli->error;
+                        echo "Error updating record: " . $wpdb->last_error;
                     }
                 }
-                $sql = "SELECT * FROM wpk4_backend_malpractice_audit WHERE id=$id";
-                $result = $mysqli->query($sql);
-                if ($result->num_rows > 0) 
+                
+                // Original Query:
+                // SELECT * FROM wpk4_backend_malpractice_audit WHERE id = :id
+                
+                $row = $wpdb->get_row(
+                    $wpdb->prepare(
+                        "SELECT * FROM {$wpdb->prefix}backend_malpractice_audit WHERE id = %d",
+                        intval($id)
+                    ),
+                    ARRAY_A
+                );
+                
+                if ($row) 
                 {
-                    $row = $result->fetch_assoc();
                     ?>
                     <h1 class="mt-4 form-header">Update Call Audit</h1>
                     <form class="form-body" method="POST" action='?pg=update&id=<?php echo $id; ?>'>
@@ -535,9 +960,14 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
                                     data-selected="<?php echo $row['agent_name']; ?>">
                                     <option value="">Choose Agent Name</option>
                                     <?php
-                                    $query_agent_codes = "SELECT * FROM wpk4_backend_agent_codes where status = 'active' order by agent_name asc";
-        								$result_agent_codes = mysqli_query($mysqli, $query_agent_codes);
-        								while($row_agent_codes = mysqli_fetch_assoc($result_agent_codes))
+                                    // Original Query:
+                                    // SELECT * FROM wpk4_backend_agent_codes WHERE status = 'active' ORDER BY agent_name ASC
+                                    $query_agent_codes = $wpdb->prepare(
+                                        "SELECT * FROM {$wpdb->prefix}backend_agent_codes WHERE status = %s ORDER BY agent_name ASC",
+                                        'active'
+                                    );
+        								$result_agent_codes = $wpdb->get_results($query_agent_codes, ARRAY_A);
+        								foreach ($result_agent_codes as $row_agent_codes)
         								{
                                             ?>
                                             <option value="<?php echo $row_agent_codes['agent_name']; ?>"><?php echo $row_agent_codes['agent_name']; ?></option>
@@ -727,7 +1157,6 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
                 } else {
                     echo "Record not found.";
                 }
-                $mysqli->close();
             }
             ?>
             <!-- End of Update Audit Data HTML -->
@@ -754,17 +1183,42 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
                 $recording_file_no = $_POST['recording_file_no'];
                 $observation = $_POST['observation'];
                 
-                $sql = "INSERT INTO wpk4_backend_malpractice_audit (telephone, call_type, campaign, agent_name, status, additonal_status, call_date, call_time, time_connect, time_acw, recording_file_no, observation, cc, added_by)
-                    VALUES ('$telephone', '$call_type', '$campaign', '$agent_name', '$status', '$additional_status', '$call_date', '$call_time', '$time_connect', '$time_acw', '$recording_file_no', '$observation', '$cc', '$currnt_userlogn');";
+                // Original Query:
+                // INSERT INTO wpk4_backend_malpractice_audit 
+                // (telephone, call_type, campaign, agent_name, status, additonal_status, call_date, 
+                //  call_time, time_connect, time_acw, recording_file_no, observation, cc, added_by)
+                // VALUES 
+                // (:telephone, :call_type, :campaign, :agent_name, :status, :additional_status, :call_date,
+                //  :call_time, :time_connect, :time_acw, :recording_file_no, :observation, :cc, :added_by)
+                
+                $result = $wpdb->insert(
+                    $wpdb->prefix . 'backend_malpractice_audit',
+                    [
+                        'telephone' => trim($telephone),
+                        'call_type' => trim($call_type),
+                        'campaign' => trim($campaign),
+                        'agent_name' => trim($agent_name),
+                        'status' => trim($status),
+                        'additonal_status' => trim($additional_status),
+                        'call_date' => trim($call_date),
+                        'call_time' => trim($call_time),
+                        'time_connect' => trim($time_connect),
+                        'time_acw' => trim($time_acw),
+                        'recording_file_no' => trim($recording_file_no),
+                        'observation' => trim($observation),
+                        'cc' => trim($cc),
+                        'added_by' => $current_username
+                    ],
+                    ['%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s']
+                );
 
-                if ($mysqli->query($sql) === TRUE) 
+                if ($result !== false) 
                 {
                     echo '<script>  showAlert("Inserted data successfully"); window.location.href= "?"</script>';
                 } else {
-                    echo "Error updating record: " . $mysqli->error;
+                    echo "Error inserting record: " . $wpdb->last_error;
                 }
             }
-            //$mysqli->close();
         ?>
         <div class="container">
             <h1 class="mt-4 form-header">New Call Audit</h1>
@@ -776,9 +1230,14 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
                         <select id="agent-name" class="form-control" name="agent_name">
                             <option value="" selected>Choose Agent Name</option>
                             <?php
-                            $query_agent_codes = "SELECT * FROM wpk4_backend_agent_codes where status = 'active' order by agent_name asc";
-								$result_agent_codes = mysqli_query($mysqli, $query_agent_codes);
-								while($row_agent_codes = mysqli_fetch_assoc($result_agent_codes))
+                            // Original Query:
+                            // SELECT * FROM wpk4_backend_agent_codes WHERE status = 'active' ORDER BY agent_name ASC
+                            $query_agent_codes = $wpdb->prepare(
+                                "SELECT * FROM {$wpdb->prefix}backend_agent_codes WHERE status = %s ORDER BY agent_name ASC",
+                                'active'
+                            );
+								$result_agent_codes = $wpdb->get_results($query_agent_codes, ARRAY_A);
+								foreach ($result_agent_codes as $row_agent_codes)
 								{
                                     ?>
                                     <option value="<?php echo $row_agent_codes['agent_name']; ?>"><?php echo $row_agent_codes['agent_name']; ?></option>
@@ -959,14 +1418,21 @@ $is_ip_matched = mysqli_num_rows($result_ip_selection);
                         if (isset($_GET['id'])) {
                             $id = $_GET['id'];
 
-                            $sql = "DELETE FROM wpk4_backend_malpractice_audit WHERE id=$id";
+                            // Original Query:
+                            // DELETE FROM wpk4_backend_malpractice_audit 
+                            // WHERE id = :id
+                            
+                            $result = $wpdb->delete(
+                                $wpdb->prefix . 'backend_malpractice_audit',
+                                ['id' => intval($id)],
+                                ['%d']
+                            );
 
-                            if ($mysqli->query($sql) === TRUE) {
+                            if ($result !== false && $result > 0) {
                                 echo "<script> showAlert('Deleted data Sucessfully'); window.location.href='?'</script>";
                             } else {
-                                echo "Error deleting record: " . $mysqli->error;
+                                echo "Error deleting record: " . $wpdb->last_error;
                             }
-                            $mysqli->close();
                         }
                 ?>
         <!-- End of Delete Audit Record -->

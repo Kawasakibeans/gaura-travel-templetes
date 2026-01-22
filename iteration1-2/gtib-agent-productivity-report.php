@@ -14,6 +14,10 @@ if ($conn->connect_error) {
     exit;
 }
 
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'http://localhost/api';
+
 function safeQuery($conn, $query, $label) {
     $result = $conn->query($query);
     if (!$result) die("❌ Query failed in [$label]: " . $conn->error);
@@ -28,29 +32,54 @@ $manager_filter = $_GET['manager_filter'] ?? '';
 
 date('Y-m-d', strtotime('-1 day'));
 
-// Criteria values
-$keyMetricsQuery = "
-SELECT
-    SUM(combined.pax) AS total_pax,
-    SUM(combined.gdeals) AS gdeals,
-    SUM(combined.fit) AS fit,
-    SUM(combined.gtib_count) AS total_gtib,
-    ROUND(IF(SUM(combined.gtib_count) > 0, SUM(combined.pax) / SUM(combined.gtib_count), 0), 4) AS conversion,
-    ROUND(IF(SUM(combined.gtib_count) > 0, SUM(combined.new_sale_made_count) / SUM(combined.gtib_count), 0), 4) AS fcs,
-    SEC_TO_TIME(ROUND(IF(SUM(combined.gtib_count) > 0, SUM(combined.rec_duration) / SUM(combined.gtib_count), 0))) AS AHT
-FROM (
-    SELECT a.agent_name, 0 pax, 0 fit, 0 pif, 0 gdeals, a.team_name, a.gtib_count, a.new_sale_made_count, a.non_sale_made_count, a.rec_duration
-    FROM wpk4_backend_agent_inbound_call a
-    LEFT JOIN wpk4_backend_agent_codes c ON a.tsr = c.tsr AND c.status = 'active'
-    WHERE a.call_date = '$start_date'
-    UNION ALL
-    SELECT a.agent_name, a.pax, a.fit, a.pif, a.gdeals, a.team_name, 0, 0, 0, 0
-    FROM wpk4_backend_agent_booking a
-    LEFT JOIN wpk4_backend_agent_codes c ON a.tsr = c.tsr AND c.status = 'active'
-    WHERE date(a.order_date) = '$start_date'
-) AS combined
-";
-$criteria = safeQuery($conn, $keyMetricsQuery, 'Key Metrics');
+// Criteria values - Fetch using API
+// 1. Prepare API URL
+$apiUrl = $base_url . '/gtib/agent-productivity';
+$queryParams = [
+    'start_date' => $start_date,
+    'team' => $team_filter,
+    'manager' => $manager_filter
+];
+$fullUrl = $apiUrl . '?' . http_build_query($queryParams);
+
+// 2. Call API
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_URL, $fullUrl);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+$response = curl_exec($ch);
+curl_close($ch);
+
+// 3. Process Response
+$criteria = [];
+if ($response) {
+    $jsonResponse = json_decode($response, true);
+    if (isset($jsonResponse['data']['criteria'])) {
+        $apiCriteria = $jsonResponse['data']['criteria'];
+        $criteria = [
+            'total_pax' => $apiCriteria['total_pax'] ?? 0,
+            'gdeals' => $apiCriteria['gdeals'] ?? 0,
+            'fit' => $apiCriteria['fit'] ?? 0,
+            'total_gtib' => $apiCriteria['total_gtib'] ?? 0,
+            'conversion' => $apiCriteria['conversion_ratio'] ?? 0,
+            'fcs' => $apiCriteria['fcs_ratio'] ?? 0,
+            'AHT' => $apiCriteria['aht'] ?? '00:00:00'
+        ];
+    }
+}
+
+// Fallback if API fails or returns empty
+if (empty($criteria)) {
+    $criteria = [
+        'total_pax' => 0,
+        'gdeals' => 0,
+        'fit' => 0,
+        'total_gtib' => 0,
+        'conversion' => 0,
+        'fcs' => 0,
+        'AHT' => '00:00:00'
+    ];
+}
 
 // Convert AHT to seconds for comparison
 $aht_parts = explode(':', $criteria['AHT'] ?? '00:00:00');
@@ -1030,15 +1059,15 @@ document.addEventListener('DOMContentLoaded', function() {
 // // Button to toggle visibility of sections
 // function toggleSection(sectionId) {
 //     const sections = ['allAgentsSection', 'aboveAvgSection', 'belowAvgSection'];
-
+//
 //     sections.forEach(function(section) {
 //         const sectionElement = document.getElementById(section);
 //         sectionElement.style.display = 'none';  // Hide section
 //     });
-
+//
 //     const selectedSection = document.getElementById(sectionId);
 //     selectedSection.style.display = 'block';  // Show selected section
-
+//
 //     // Apply sorting to the table of the newly visible section
 //     if (sectionId === 'allAgentsSection') {
 //         applySorting('allAgentsTable');

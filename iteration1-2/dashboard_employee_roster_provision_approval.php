@@ -1,36 +1,82 @@
 <?php
 /**
- * Template Name: Manager Roster Approval
+ * Template Name: Preliminary Roster Approval
  * Template Post Type: post, page
  */
-
 
 get_header();
 
 // --- Next-month window (handles Dec -> Jan) ---
-$start_next = (new DateTime('first day of next month 00:00:00'))->format('Y-m-d H:i:s');
-$end_next   = (new DateTime('last day of next month 23:59:59'))->format('Y-m-d H:i:s');
+ $start_next = (new DateTime('first day of next month 00:00:00'))->format('Y-m-d H:i:s');
+ $end_next   = (new DateTime('last day of next month 23:59:59'))->format('Y-m-d H:i:s');
 
 // For dd/mm/YYYY HH:ii text dates stored in leave tables
-$start_next_str = (new DateTime('first day of next month 00:00'))->format('Y-m-d H:i:s');
-$end_next_str   = (new DateTime('last day of next month 23:59'))->format('Y-m-d H:i:s');
+ $start_next_str = (new DateTime('first day of next month 00:00'))->format('Y-m-d H:i:s');
+ $end_next_str   = (new DateTime('last day of next month 23:59'))->format('Y-m-d H:i:s');
 
+// Base URL for API endpoints
+ $api_base_url = "https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1";
+
+// Function to make GET requests to API
+function api_get($endpoint) {
+    $url = $GLOBALS['api_base_url'] . $endpoint;
+    $response = wp_remote_get($url);
+    
+    if (is_wp_error($response)) {
+        return ['status' => 'error', 'message' => $response->get_error_message(), 'data' => null];
+    }
+    
+    $body = wp_remote_retrieve_body($response);
+    $data = json_decode($body, true);
+    
+    if (!$data || !isset($data['status'])) {
+        return ['status' => 'error', 'message' => 'Invalid API response', 'data' => null];
+    }
+    
+    return $data;
+}
+
+// Function to make PATCH requests to API
+function api_patch($endpoint, $body) {
+    $url = $GLOBALS['api_base_url'] . $endpoint;
+    $args = [
+        'method' => 'PATCH',
+        'headers' => [
+            'Content-Type' => 'application/json',
+        ],
+        'body' => json_encode($body),
+    ];
+    
+    $response = wp_remote_request($url, $args);
+    
+    if (is_wp_error($response)) {
+        return ['status' => 'error', 'message' => $response->get_error_message(), 'data' => null];
+    }
+    
+    $response_body = wp_remote_retrieve_body($response);
+    $data = json_decode($response_body, true);
+    
+    if (!$data || !isset($data['status'])) {
+        return ['status' => 'error', 'message' => 'Invalid API response', 'data' => null];
+    }
+    
+    return $data;
+}
 
 // Handle leave request approval/rejection (POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'], $_POST['request_id'])) {
     if (wp_verify_nonce($_POST['_wpnonce'], 'leave_request_action')) {
         $leave_action = sanitize_text_field($_POST['action']);
         $leave_id = intval($_POST['request_id']);
-        $leave_requests_table = 'wpk4_backend_employee_roster_leaves_approval';
+        
         if (in_array($leave_action, ['approve', 'reject'])) {
             $new_status = $leave_action === 'approve' ? 'Approved' : 'Rejected';
-            $wpdb->update(
-                $leave_requests_table,
-                ['current_status' => $new_status],
-                ['id' => $leave_id],
-                ['%s'],
-                ['%d']
-            );
+            
+            // Use API to update the leave request status
+            $api_response = api_patch("/roster/leave-requests/$leave_id", [
+                'current_status' => $new_status
+            ]);
+            
             // Redirect to avoid resubmission and show toast
             $redirect_url = add_query_arg('action', $leave_action, remove_query_arg(['action', 'request_id']));
             wp_redirect($redirect_url);
@@ -63,7 +109,7 @@ function _weekday_index($w) {
 
 /**
  * Given a base date string (created_date) and a weekday label (e.g. "Saturday" or "Wed"),
- * return the calendar date (d/m/Y) of that weekday in the SAME ISO week as the base date.
+ * return calendar date (d/m/y) of that weekday in SAME ISO week as base date.
  * ISO week starts Monday.
  */
 function date_for_weekday_in_same_week($base_date_str, $weekday_label) {
@@ -76,7 +122,7 @@ function date_for_weekday_in_same_week($base_date_str, $weekday_label) {
     $target_idx = _weekday_index($weekday_label);
     if ($target_idx === null) return '';
 
-    // Find Monday of the same week as base date
+    // Find Monday of same week as base date
     $monday_ts = strtotime(date('Y-m-d', $base_ts) . ' monday this week');
     // BUT if base date itself is Sunday (N=7), "monday this week" returns next day Monday.
     // Fix: if base is Sunday (base_day_idx=6), go back 6 days.
@@ -85,17 +131,16 @@ function date_for_weekday_in_same_week($base_date_str, $weekday_label) {
     }
 
     $target_ts = strtotime("+{$target_idx} days", $monday_ts);
-    return $target_ts ? date('d/m/Y', $target_ts) : '';
+    return $target_ts ? date('d/m/y', $target_ts) : '';
 }
-
 
 global $wpdb;
 
 // Define table names with WordPress table prefix
-$roster_requests_table = $wpdb->prefix . 'manage_roster_requests';
-$agent_codes_table = $wpdb->prefix . 'backend_agent_codes';
-$availability_table = $wpdb->prefix . 'backend_availability_sheet';
-$roster_table = $wpdb->prefix . 'backend_employee_roster';
+ $roster_requests_table = $wpdb->prefix . 'manage_roster_requests';
+ $agent_codes_table = $wpdb->prefix . 'backend_agent_codes';
+ $availability_table = $wpdb->prefix . 'backend_availability_sheet';
+ $roster_table = $wpdb->prefix . 'backend_employee_roster';
 
 // Handle approval/rejection actions
 if (isset($_GET['action']) && isset($_GET['request_id'])) {
@@ -105,7 +150,7 @@ if (isset($_GET['action']) && isset($_GET['request_id'])) {
     if (in_array($action, ['approve', 'reject'])) {
         $new_status = $action === 'approve' ? 'Provision Approve' : 'Rejected';
         
-        // Get the request details first
+        // Get request details first
         $request = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM $roster_requests_table WHERE auto_id = %d",
             $request_id
@@ -120,7 +165,7 @@ if (isset($_GET['action']) && isset($_GET['request_id'])) {
             ['%d']
         );
         
-        // If approved, update the relevant system records
+        // If approved, update relevant system records
         if ($action === 'approve') {
             // Get agent details from agent codes table
             $agent_details = $wpdb->get_row($wpdb->prepare(
@@ -146,7 +191,7 @@ if (isset($_GET['action']) && isset($_GET['request_id'])) {
                         break;
                         
                     case 'Shift Change Request':
-                        // Format the new shift time (remove AM/PM and convert to 24-hour format)
+                        // Format new shift time (remove AM/PM and convert to 24-hour format)
                         $new_shift = preg_replace('/[^0-9:]/', '', $request->requested_shift);
                         $new_shift = date('Hi', strtotime($new_shift));
                         
@@ -174,20 +219,20 @@ if (isset($_GET['action']) && isset($_GET['request_id'])) {
 }
 
 // Get selected sales manager from URL
-$selected_manager = isset($_GET['sale_manager']) ? sanitize_text_field($_GET['sale_manager']) : '';
+ $selected_manager = isset($_GET['sale_manager']) ? sanitize_text_field($_GET['sale_manager']) : '';
 
 // Build WHERE clauses with sales manager filter
-$pending_where = "status = 'Pending'";
-$processed_where = "status != 'Pending'";
+ $pending_where = "status = 'Pending'";
+ $processed_where = "status != 'Pending'";
 
 if (!empty($selected_manager)) {
     $pending_where .= $wpdb->prepare(" AND sale_manager = %s", $selected_manager);
     $processed_where .= $wpdb->prepare(" AND sale_manager = %s", $selected_manager);
 }
 
-// Get all pending requests with agent names joined from agent_codes_table
+// Get all pending requests with agent names joined from agent_codes table
 // Get all pending requests (NEXT MONTH only) with agent names joined
-$pending_requests = $wpdb->get_results(
+ $pending_requests = $wpdb->get_results(
     $wpdb->prepare(
         "SELECT r.*, a.agent_name
          FROM {$roster_requests_table} r
@@ -204,7 +249,7 @@ $pending_requests = $wpdb->get_results(
 );
 
 // Get all processed requests (NEXT MONTH only) with agent names joined
-$processed_requests = $wpdb->get_results(
+ $processed_requests = $wpdb->get_results(
     $wpdb->prepare(
         "SELECT r.*, a.agent_name
          FROM {$roster_requests_table} r
@@ -220,40 +265,41 @@ $processed_requests = $wpdb->get_results(
     )
 );
 
-
 // Get all unique sales managers for dropdown
-$sales_managers = $wpdb->get_col(
+ $sales_managers = $wpdb->get_col(
     "SELECT DISTINCT sale_manager FROM $roster_requests_table ORDER BY sale_manager"
 );
 
-$leave_requests_table = 'wpk4_backend_employee_roster_leaves_approval';
+// 1. Get Leave Requests by Document Number using API
+ $leave_requests_table = 'wpk4_backend_employee_roster_leaves_approval';
 
 if (!empty($selected_manager)) {
-    $leave_requests = $wpdb->get_results(
-        $wpdb->prepare(
-            "SELECT * FROM $leave_requests_table WHERE sm = %s and MONTH(STR_TO_DATE(from_date, '%d/%m/%Y %H:%i')) = MONTH(CURRENT_DATE) + 1 ORDER BY doc_no DESC",
-            $selected_manager
-        )
-    );
+    // Get leave requests for a specific manager
+    $leave_requests_response = api_get("/roster/leave-requests?sm=" . urlencode($selected_manager));
 } else {
-    $leave_requests = $wpdb->get_results("SELECT * FROM $leave_requests_table WHERE MONTH(STR_TO_DATE(from_date, '%d/%m/%Y %H:%i')) = MONTH(CURRENT_DATE) + 1 ORDER BY doc_no DESC");
+    // Get all leave requests
+    $leave_requests_response = api_get("/roster/leave-requests");
 }
 
+if ($leave_requests_response['status'] === 'success' && $leave_requests_response['data']) {
+    $leave_requests = $leave_requests_response['data'];
+} else {
+    $leave_requests = [];
+}
 
 function daterange($start_date, $end_date) {
     $dates = [];
-    $start = DateTime::createFromFormat('d/m/Y H:i', $start_date);
-    $end = DateTime::createFromFormat('d/m/Y H:i', $end_date);
+    $start = DateTime::createFromFormat('d/m/y H:i', $start_date);
+    $end = DateTime::createFromFormat('d/m/y H:i', $end_date);
 
     if (!$start || !$end) return $dates;
 
     while ($start <= $end) {
-        $dates[] = $start->format('d/m/Y');
+        $dates[] = $start->format('d/m/y');
         $start->modify('+1 day');
     }
     return $dates;
 }
-
 ?>
 
 <!DOCTYPE html>
@@ -319,7 +365,7 @@ function daterange($start_date, $end_date) {
         }
         
         .btn-action {
-            margin: 5px;
+            margin:5px;
             transition: all 0.2s ease;
             font-size: 16px;
         }
@@ -381,7 +427,7 @@ function daterange($start_date, $end_date) {
         .nav-tabs .nav-link.active {
             color: var(--dark-blue);
             background-color: transparent;
-            border-bottom: 3px solid var(--dark-blue);
+            border-bottom:3px solid var(--dark-blue);
         }
         
         .badge-count {
@@ -461,7 +507,7 @@ function daterange($start_date, $end_date) {
             text-align: center;
         }
         
-        /* Show tooltip when hovering the reason box */
+        /* Show tooltip when hovering reason box */
         .reason-box:hover + .reason-tooltip,
         .reason-tooltip:hover {
             display: block;
@@ -639,7 +685,7 @@ function daterange($start_date, $end_date) {
                                         <td>
                                             <?php 
                                             echo !empty($request->created_date) 
-                                                ? esc_html(date('d/m/Y', strtotime($request->created_date))) 
+                                                ? esc_html(date('d/m/y', strtotime($request->created_date))) 
                                                 : '';
                                             ?>
                                         </td>
@@ -729,7 +775,7 @@ function daterange($start_date, $end_date) {
                                         <td>
                                             <?php 
                                             echo !empty($request->created_date) 
-                                                ? esc_html(date('d/m/Y', strtotime($request->created_date))) 
+                                                ? esc_html(date('d/m/y', strtotime($request->created_date))) 
                                                 : '';
                                             ?>
                                         </td>
@@ -792,24 +838,8 @@ function daterange($start_date, $end_date) {
                 <?php endif; ?>
             </div>
             
-        <div class="tab-pane fade" id="leave-requests-processed" role="tabpanel">
-            <?php 
-            // Get processed leave requests (not 'Initiated')
-            if (!empty($selected_manager)) {
-                $processed_leave_requests = $wpdb->get_results(
-                    $wpdb->prepare(
-                        "SELECT * FROM $leave_requests_table WHERE sm = %s AND current_status != 'Initiated' and MONTH(STR_TO_DATE(from_date, '%d/%m/%Y %H:%i')) = MONTH(CURRENT_DATE) + 1 ORDER BY doc_no DESC",
-                        $selected_manager
-                    )
-                );
-            } else {
-                $processed_leave_requests = $wpdb->get_results(
-                    "SELECT * FROM $leave_requests_table WHERE current_status != 'Initiated' and MONTH(STR_TO_DATE(from_date, '%d/%m/%Y %H:%i')) = MONTH(CURRENT_DATE) + 1 ORDER BY doc_no DESC"
-                );
-            }
-            ?>
-            
-            <?php if (!empty($processed_leave_requests)): ?>
+            <div class="tab-pane fade" id="leave-requests-processed" role="tabpanel">
+            <?php if (!empty($leave_requests)): ?>
                 <div class="table-responsive">
                     <table class="table table-bordered table-striped leave-requests text-center align-middle">
                         <thead class="table-light">
@@ -826,39 +856,39 @@ function daterange($start_date, $end_date) {
                         <tbody>
                             <?php
                             $group_idx = 0;
-                            foreach ($processed_leave_requests as $req):
+                            foreach ($leave_requests as $req):
                                 $dates = daterange($req->from_date, $req->till_date);
                                 $rowspan = max(1, count($dates));
                                 $group_class = ($group_idx % 2 === 0) ? 'leave-group-even' : 'leave-group-odd';
                                 foreach ($dates as $index => $date):
                             ?>
-                                    <tr class="<?php echo $group_class; ?>">
-                                        <?php if ($index === 0): ?>
-                                            <td rowspan="<?php echo $rowspan; ?>"><?php echo esc_html($req->doc_no); ?></td>
-                                            <td rowspan="<?php echo $rowspan; ?>"><?php echo esc_html($req->employee_code); ?></td>
-                                            <td rowspan="<?php echo $rowspan; ?>" class="employee-name"><?php echo esc_html($req->employee_name); ?></td>
-                                            <td rowspan="<?php echo $rowspan; ?>"><?php echo esc_html($req->leave_type); ?></td>
-                                        <?php endif; ?>
-                                        <td class="date-col"><?php echo esc_html($date); ?></td>
-                                        <?php if ($index === 0): ?>
-                                            <td rowspan="<?php echo $rowspan; ?>">
-                                                <div class="position-relative d-inline-block">
-                                                    <span class="remarks-preview" data-bs-toggle="tooltip" data-bs-placement="top" title="<?php echo esc_attr($req->remarks); ?>">
-                                                        <?php echo strlen($req->remarks) > 20 ? substr(esc_html($req->remarks), 0, 20).'...' : esc_html($req->remarks); ?>
-                                                    </span>
-                                                </div>
-                                            </td>
-                                            <td rowspan="<?php echo $rowspan; ?>" class="status-col">
-                                                <span class="status-<?php echo strtolower($req->current_status); ?>">
-                                                    <?php echo esc_html($req->current_status); ?>
+                                <tr class="<?php echo $group_class; ?>">
+                                    <?php if ($index === 0): ?>
+                                        <td rowspan="<?php echo $rowspan; ?>"><?php echo esc_html($req->doc_no); ?></td>
+                                        <td rowspan="<?php echo $rowspan; ?>"><?php echo esc_html($req->employee_code); ?></td>
+                                        <td rowspan="<?php echo $rowspan; ?>" class="employee-name"><?php echo esc_html($req->employee_name); ?></td>
+                                        <td rowspan="<?php echo $rowspan; ?>"><?php echo esc_html($req->leave_type); ?></td>
+                                    <?php endif; ?>
+                                    <td class="date-col"><?php echo esc_html($date); ?></td>
+                                    <?php if ($index === 0): ?>
+                                        <td rowspan="<?php echo $rowspan; ?>">
+                                            <div class="position-relative d-inline-block">
+                                                <span class="remarks-preview" data-bs-toggle="tooltip" data-bs-placement="top" title="<?php echo esc_attr($req->remarks); ?>">
+                                                    <?php echo strlen($req->remarks) > 20 ? substr(esc_html($req->remarks), 0, 20).'...' : esc_html($req->remarks); ?>
                                                 </span>
-                                            </td>
+                                            </div>
+                                        </td>
+                                        <td rowspan="<?php echo $rowspan; ?>" class="status-col">
+                                            <span class="status-<?php echo strtolower($req->current_status); ?>">
+                                                <?php echo esc_html($req->current_status); ?>
+                                            </span>
+                                        </td>
                                         
-                                        <?php endif; ?>
-                                    </tr>
+                                    <?php endif; ?>
+                                </tr>
                             <?php endforeach;
-                                $group_idx++;
-                            endforeach; ?>
+                            $group_idx++;
+                        endforeach; ?>
                         </tbody>
                     </table>
                 </div>
@@ -916,12 +946,12 @@ function daterange($start_date, $end_date) {
                                     <td rowspan="<?php echo $rowspan; ?>">
                                         <?php if (strtolower($req->current_status) === 'initiated'): ?>
                                             <div class="d-flex justify-content-center gap-2">
-                                                <form method="post" class="mb-0">
+                                                <form method="post" class="mb-0" onsubmit="return confirmLeaveAction(this, 'approve');">
                                                     <?php wp_nonce_field('leave_request_action'); ?>
                                                     <input type="hidden" name="request_id" value="<?php echo intval($req->id); ?>">
                                                     <button type="submit" name="action" value="approve" class="btn btn-sm btn-success">Approve</button>
                                                 </form>
-                                                <form method="post" class="mb-0">
+                                                <form method="post" class="mb-0" onsubmit="return confirmLeaveAction(this, 'reject');">
                                                     <?php wp_nonce_field('leave_request_action'); ?>
                                                     <input type="hidden" name="request_id" value="<?php echo intval($req->id); ?>">
                                                     <button type="submit" name="action" value="reject" class="btn btn-sm btn-danger">Reject</button>
@@ -934,8 +964,8 @@ function daterange($start_date, $end_date) {
                                 <?php endif; ?>
                             </tr>
                     <?php endforeach;
-                        $group_idx++;
-                    endforeach; ?>
+                    $group_idx++;
+                endforeach; ?>
                 </tbody>
             </table>
         </div>
@@ -963,6 +993,69 @@ function daterange($start_date, $end_date) {
 <!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// Function to handle leave request approval/rejection using API
+function updateLeaveRequestStatus(requestId, newStatus) {
+    // Show loading state
+    const buttons = document.querySelectorAll(`form:has(input[name="request_id"][value="${requestId}"]) button`);
+    buttons.forEach(btn => {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
+    });
+    
+    // Use API to update the leave request status
+    fetch('<?php echo $api_base_url; ?>/roster/leave-requests/' + requestId, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            'current_status': newStatus
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            // Show success message and reload
+            alert('Request has been processed successfully!');
+            location.reload();
+        } else {
+            // Show error message
+            alert('Error processing request: ' + (data.message || 'Unknown error'));
+            // Re-enable buttons
+            buttons.forEach(btn => {
+                btn.disabled = false;
+                if (btn.name === 'action') {
+                    btn.innerHTML = btn.value === 'approve' ? 'Approve' : 'Reject';
+                }
+            });
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('An error occurred while processing the request.');
+        // Re-enable buttons
+        buttons.forEach(btn => {
+            btn.disabled = false;
+            if (btn.name === 'action') {
+                btn.innerHTML = btn.value === 'approve' ? 'Approve' : 'Reject';
+            }
+        });
+    });
+}
+
+// Function to confirm leave action
+function confirmLeaveAction(form, action) {
+    const requestId = form.querySelector('input[name="request_id"]').value;
+    let confirmationMessage = '';
+    
+    if (action === 'approve') {
+        confirmationMessage = 'Are you sure you want to approve this leave request?';
+    } else {
+        confirmationMessage = 'Are you sure you want to reject this leave request?';
+    }
+    
+    return confirm(confirmationMessage);
+}
 
 // Corrected JavaScript - single DOMContentLoaded listener
 document.addEventListener('DOMContentLoaded', function() {
@@ -994,6 +1087,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     confirmationMessage = 'Are you sure you want to approve this RDO change request? This will update the agent\'s RDO in the availability sheet.';
                 } else if (requestType === 'Leave Request') {
                     confirmationMessage = 'Are you sure you want to approve this Leave request? ';
+                }
                 
                 if (confirmationMessage && !confirm(confirmationMessage)) {
                     e.preventDefault();
@@ -1001,9 +1095,20 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+    
+    // Update leave request approval/rejection forms to use API
+    document.querySelectorAll('form:has(input[name="request_id"])').forEach(form => {
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const requestId = this.querySelector('input[name="request_id"]').value;
+            const action = this.querySelector('button[name="action"]').value;
+            const newStatus = action === 'approve' ? 'Approved' : 'Rejected';
+            
+            updateLeaveRequestStatus(requestId, newStatus);
+        });
+    });
 });
-
-
 </script>
 </body>
 </html>

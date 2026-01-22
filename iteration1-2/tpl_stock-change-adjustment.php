@@ -7,20 +7,391 @@
  * @subpackage Twenty_Twenty
  * @since Twenty Twenty 1.0
  */
-get_header();?>
+
+require_once($_SERVER['DOCUMENT_ROOT'].'/wp-load.php');
+
+error_reporting(E_ALL);
+date_default_timezone_set("Australia/Melbourne");
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1';
+
+global $wpdb, $current_user;
+
+wp_get_current_user();
+$currnt_userlogn = $current_user->user_login ?? 'system';
+
+// Check if this is an API request
+$is_api_request = false;
+$request_uri = $_SERVER['REQUEST_URI'] ?? '';
+$path = parse_url($request_uri, PHP_URL_PATH);
+$path_parts = array_filter(explode('/', trim($path, '/')));
+$path_parts = array_values($path_parts);
+
+// Check if path contains API indicators
+for ($i = 0; $i < count($path_parts); $i++) {
+    if ($path_parts[$i] === 'stock' && isset($path_parts[$i + 1]) && $path_parts[$i + 1] === 'adjustment') {
+        $is_api_request = true;
+        break;
+    }
+}
+
+// If API request, handle it and exit
+if ($is_api_request) {
+    header('Content-Type: application/json');
+    
+    // Helper functions
+    function sendResponse($status, $data = null, $message = null, $code = 200) {
+        http_response_code($code);
+        echo json_encode([
+            'status' => $status,
+            'data' => $data,
+            'message' => $message
+        ]);
+        exit;
+    }
+    
+    function sendError($message, $code = 500) {
+        sendResponse('error', null, $message, $code);
+    }
+    
+    $method = $_SERVER['REQUEST_METHOD'];
+    
+    // Extract resource from path
+    $resource = null;
+    for ($i = 0; $i < count($path_parts); $i++) {
+        if ($path_parts[$i] === 'adjustment' && isset($path_parts[$i + 1])) {
+            $resource = $path_parts[$i + 1];
+            break;
+        }
+    }
+    
+    try {
+        // POST /v1/stock/adjustment/preview - Preview stock adjustment
+        if ($method === 'POST' && $resource === 'preview') {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            $pnr = isset($input['pnr']) ? trim($input['pnr']) : '';
+            $limit = isset($input['limit']) ? intval($input['limit']) : 50;
+            
+            $current_date = date("Y-m-d H:i:s");
+            $current_date_starting = date("Y-m-d") . ' 00:00:00';
+            
+            $records = [];
+            
+            if (!empty($pnr)) {
+                // Individual (by PNR)
+                // Original Query:
+                // SELECT * FROM wpk4_backend_stock_management_sheet 
+                // WHERE pnr = :pnr 
+                //   AND (current_stock_dummy != '' AND current_stock_dummy IS NOT NULL) 
+                // ORDER BY dep_date ASC
+                
+                $stock_records = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT * FROM {$wpdb->prefix}backend_stock_management_sheet 
+                         WHERE pnr = %s 
+                         AND (current_stock_dummy != '' AND current_stock_dummy IS NOT NULL) 
+                         ORDER BY dep_date ASC",
+                        $pnr
+                    ),
+                    ARRAY_A
+                );
+            } else {
+                // Bulk (recent changes)
+                // Original Query:
+                // SELECT * FROM wpk4_backend_stock_management_sheet 
+                // WHERE modified_date <= :current_date 
+                //   AND modified_date >= :current_date_starting 
+                //   AND (current_stock_dummy != '' AND current_stock_dummy IS NOT NULL) 
+                // ORDER BY dep_date ASC 
+                // LIMIT :limit
+                
+                $stock_records = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT * FROM {$wpdb->prefix}backend_stock_management_sheet 
+                         WHERE modified_date <= %s 
+                         AND modified_date >= %s 
+                         AND (current_stock_dummy != '' AND current_stock_dummy IS NOT NULL) 
+                         ORDER BY dep_date ASC 
+                         LIMIT %d",
+                        $current_date,
+                        $current_date_starting,
+                        $limit
+                    ),
+                    ARRAY_A
+                );
+            }
+            
+            foreach ($stock_records as $row) {
+                $pnr_item = $row['pnr'];
+                $dep_date = $row['dep_date'];
+                $trip_id = $row['trip_id'];
+                $current_stock = intval($row['current_stock']);
+                $current_stock_dummy = $row['current_stock_dummy'];
+                $stock_unuse = $row['stock_unuse'];
+                
+                // Get product and pricing info
+                // Original Query:
+                // SELECT * FROM wpk4_backend_stock_product_manager 
+                // WHERE trip_code = :trip_id AND travel_date = :dep_date
+                
+                $product_info = $wpdb->get_row(
+                    $wpdb->prepare(
+                        "SELECT * FROM {$wpdb->prefix}backend_stock_product_manager 
+                         WHERE trip_code = %s AND travel_date = %s",
+                        $trip_id,
+                        $dep_date
+                    ),
+                    ARRAY_A
+                );
+                
+                $product_id = '';
+                $pricing_id = '';
+                if ($product_info) {
+                    $product_id = $product_info['product_id'] ?? '';
+                    $pricing_id = $product_info['pricing_id'] ?? '';
+                }
+                
+                // Get max_pax from pricing
+                $max_pax_original = 0;
+                if (!empty($pricing_id)) {
+                    // Original Query:
+                    // SELECT * FROM wpk4_wt_pricings WHERE id = :pricing_id
+                    
+                    $pricing_info = $wpdb->get_row(
+                        $wpdb->prepare(
+                            "SELECT * FROM {$wpdb->prefix}wt_pricings WHERE id = %s",
+                            $pricing_id
+                        ),
+                        ARRAY_A
+                    );
+                    
+                    if ($pricing_info) {
+                        $max_pax_original = intval($pricing_info['max_pax'] ?? 0);
+                    }
+                }
+                
+                // Get total paid pax
+                // Original Query:
+                // SELECT total_pax FROM wpk4_backend_travel_bookings 
+                // WHERE trip_code = :trip_id AND travel_date = :dep_date 
+                //   AND (payment_status = 'paid' OR payment_status = 'partially_paid')
+                
+                $total_pax = 0;
+                $paid_bookings = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT total_pax FROM {$wpdb->prefix}backend_travel_bookings 
+                         WHERE trip_code = %s AND travel_date = %s 
+                         AND (payment_status = 'paid' OR payment_status = 'partially_paid')",
+                        $trip_id,
+                        $dep_date
+                    ),
+                    ARRAY_A
+                );
+                
+                foreach ($paid_bookings as $booking) {
+                    $total_pax += intval($booking['total_pax'] ?? 0);
+                }
+                
+                // Get total booked pax
+                $total_booked = 0;
+                $all_bookings = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT total_pax FROM {$wpdb->prefix}backend_travel_bookings 
+                         WHERE trip_code = %s AND travel_date = %s",
+                        $trip_id,
+                        $dep_date
+                    ),
+                    ARRAY_A
+                );
+                
+                foreach ($all_bookings as $booking) {
+                    $total_booked += intval($booking['total_pax'] ?? 0);
+                }
+                
+                // Calculate new_max_pax
+                $new_max_pax = $max_pax_original + ($current_stock - intval($current_stock_dummy));
+                
+                // Determine match status
+                $match = 'New';
+                if (!empty($pnr_item)) {
+                    if (empty($pricing_id)) {
+                        $match = 'PricingID not found';
+                    } else {
+                        $match = 'Existing';
+                    }
+                }
+                
+                $records[] = [
+                    'pnr' => $pnr_item,
+                    'dep_date' => $dep_date,
+                    'trip_id' => $trip_id,
+                    'current_stock' => $current_stock,
+                    'current_stock_dummy' => $current_stock_dummy,
+                    'stock_unuse' => $stock_unuse,
+                    'product_id' => $product_id,
+                    'pricing_id' => $pricing_id,
+                    'max_pax_original' => $max_pax_original,
+                    'new_max_pax' => $new_max_pax,
+                    'total_pax' => $total_pax,
+                    'total_booked' => $total_booked,
+                    'match' => $match
+                ];
+            }
+            
+            sendResponse('success', [
+                'records' => $records,
+                'count' => count($records)
+            ], 'Stock adjustment preview retrieved successfully');
+        }
+        
+        // POST /v1/stock/adjustment/apply - Apply stock adjustment
+        if ($method === 'POST' && $resource === 'apply') {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            if (empty($input['records']) || !is_array($input['records'])) {
+                sendError('records array is required', 400);
+            }
+            
+            $records = $input['records'];
+            $current_time_modified = date('Y-m-d H:i:s');
+            $processed_pnrs = [];
+            $applied_count = 0;
+            
+            foreach ($records as $record) {
+                // Validate required fields
+                $required = ['pnr', 'dep_date', 'trip_id', 'pricing_id', 'product_id', 'max_pax_original', 'new_max_pax', 'total_pax'];
+                foreach ($required as $field) {
+                    if (!isset($record[$field])) {
+                        sendError("Field '{$field}' is required in record", 400);
+                    }
+                }
+                
+                $pnr = trim($record['pnr']);
+                $dep_date = trim($record['dep_date']);
+                $trip_id = trim($record['trip_id']);
+                $pricing_id = trim($record['pricing_id']);
+                $product_id = trim($record['product_id']);
+                $max_pax_original = intval($record['max_pax_original']);
+                $new_max_pax = intval($record['new_max_pax']);
+                $total_pax = intval($record['total_pax']);
+                
+                // Apply adjustment logic
+                if ($new_max_pax < 1 && $total_pax == 0) {
+                    // Delete pricing and date records
+                    // Original Query:
+                    // DELETE FROM wpk4_wt_pricings WHERE id = :pricing_id AND trip_id = :product_id
+                    // DELETE FROM wpk4_wt_dates WHERE pricing_ids = :pricing_id AND trip_id = :product_id AND end_date = :dep_date
+                    
+                    $wpdb->delete(
+                        $wpdb->prefix . 'wt_pricings',
+                        [
+                            'id' => $pricing_id,
+                            'trip_id' => $product_id
+                        ],
+                        ['%s', '%s']
+                    );
+                    
+                    $wpdb->delete(
+                        $wpdb->prefix . 'wt_dates',
+                        [
+                            'pricing_ids' => $pricing_id,
+                            'trip_id' => $product_id,
+                            'end_date' => $dep_date
+                        ],
+                        ['%s', '%s', '%s']
+                    );
+                } else {
+                    // Update pricing max_pax
+                    // Original Query:
+                    // UPDATE wpk4_wt_pricings SET max_pax = :new_max_pax 
+                    // WHERE id = :pricing_id AND trip_id = :product_id
+                    
+                    $wpdb->update(
+                        $wpdb->prefix . 'wt_pricings',
+                        ['max_pax' => $new_max_pax],
+                        [
+                            'id' => $pricing_id,
+                            'trip_id' => $product_id
+                        ],
+                        ['%d'],
+                        ['%s', '%s']
+                    );
+                }
+                
+                // Clear current_stock_dummy
+                // Original Query:
+                // UPDATE wpk4_backend_stock_management_sheet 
+                // SET current_stock_dummy = '' 
+                // WHERE pnr = :pnr
+                
+                $wpdb->update(
+                    $wpdb->prefix . 'backend_stock_management_sheet',
+                    ['current_stock_dummy' => ''],
+                    ['pnr' => $pnr],
+                    ['%s'],
+                    ['%s']
+                );
+                
+                if (!in_array($pnr, $processed_pnrs)) {
+                    $processed_pnrs[] = $pnr;
+                }
+                $applied_count++;
+            }
+            
+            // Clear remaining dummy values for processed PNRs
+            foreach ($processed_pnrs as $pnr_clear) {
+                $wpdb->update(
+                    $wpdb->prefix . 'backend_stock_management_sheet',
+                    ['current_stock_dummy' => ''],
+                    [
+                        'pnr' => $pnr_clear,
+                        'current_stock_dummy' => ['!=', '']
+                    ],
+                    ['%s'],
+                    ['%s', '%s']
+                );
+            }
+            
+            sendResponse('success', [
+                'applied_count' => $applied_count,
+                'processed_pnrs' => $processed_pnrs
+            ], 'Stock adjustment applied successfully');
+        }
+        
+        // Route not found
+        sendError('Endpoint not found', 404);
+        
+    } catch (Exception $e) {
+        sendError($e->getMessage(), $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500);
+    }
+}
+
+// Continue with original template code for HTML output
+get_header();
+?>
 <html> 
 <head>
 </head>
 <body>
 <div class='wpb_column vc_column_container vc_col-sm-12' id='manage_bookings' style='width:95%;margin:auto;padding:100px 0px;'>
 <?php
-error_reporting(E_ALL);
-date_default_timezone_set("Australia/Melbourne");
 include("wp-config-custom.php");
-$query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='$ip_address'";
-$result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
-$row_ip_selection = mysqli_fetch_assoc($result_ip_selection);
-$is_ip_matched = mysqli_num_rows($result_ip_selection);
+
+// Original Query:
+// SELECT * FROM wpk4_backend_ip_address_checkup WHERE ip_address = :ip_address
+$query_ip_selection = $wpdb->prepare(
+    "SELECT * FROM {$wpdb->prefix}backend_ip_address_checkup WHERE ip_address = %s",
+    $ip_address
+);
+$result_ip_selection = $wpdb->get_results($query_ip_selection, ARRAY_A);
+$row_ip_selection = !empty($result_ip_selection) ? $result_ip_selection[0] : null;
+$is_ip_matched = count($result_ip_selection);
 if($row_ip_selection['ip_address'] == $ip_address)
 {
 global $current_user;
@@ -453,4 +824,82 @@ else
 echo "<center>This page is not accessible for you.</center>";
 }
 ?>
-<?php get_footer(); ?>
+<?php 
+/**
+ * ============================================
+ * POSTMAN TEST EXAMPLES
+ * ============================================
+ * 
+ * 1. Preview Stock Adjustment (Individual by PNR)
+ *    Method: POST
+ *    URL: {{base_url}}/v1/stock/adjustment/preview
+ *    Body (JSON):
+ *      {
+ *        "pnr": "ABC123"
+ *      }
+ * 
+ * 2. Preview Stock Adjustment (Bulk - Recent Changes)
+ *    Method: POST
+ *    URL: {{base_url}}/v1/stock/adjustment/preview
+ *    Body (JSON):
+ *      {
+ *        "limit": 50
+ *      }
+ *    Or empty body for default (limit 50)
+ * 
+ *    Response:
+ *    {
+ *      "status": "success",
+ *      "data": {
+ *        "records": [
+ *          {
+ *            "pnr": "ABC123",
+ *            "dep_date": "2025-01-15",
+ *            "trip_id": "TRIP001",
+ *            "current_stock": 10,
+ *            "current_stock_dummy": "5",
+ *            "stock_unuse": 2,
+ *            "product_id": "123",
+ *            "pricing_id": "456",
+ *            "max_pax_original": 20,
+ *            "new_max_pax": 25,
+ *            "total_pax": 5,
+ *            "total_booked": 8,
+ *            "match": "Existing"
+ *          }
+ *        ],
+ *        "count": 1
+ *      },
+ *      "message": "Stock adjustment preview retrieved successfully"
+ *    }
+ * 
+ * 3. Apply Stock Adjustment
+ *    Method: POST
+ *    URL: {{base_url}}/v1/stock/adjustment/apply
+ *    Body (JSON):
+ *      {
+ *        "records": [
+ *          {
+ *            "pnr": "ABC123",
+ *            "dep_date": "2025-01-15",
+ *            "trip_id": "TRIP001",
+ *            "pricing_id": "456",
+ *            "product_id": "123",
+ *            "max_pax_original": 20,
+ *            "new_max_pax": 25,
+ *            "total_pax": 5
+ *          }
+ *        ]
+ *      }
+ * 
+ *    Response:
+ *    {
+ *      "status": "success",
+ *      "data": {
+ *        "applied_count": 1,
+ *        "processed_pnrs": ["ABC123"]
+ *      },
+ *      "message": "Stock adjustment applied successfully"
+ *    }
+ */
+get_footer(); ?>

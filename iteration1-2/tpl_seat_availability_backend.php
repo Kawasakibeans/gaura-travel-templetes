@@ -1,45 +1,146 @@
 <?php
 require_once ('../../../../wp-config.php');
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+ini_set('display_errors', '1');
+ini_set('display_startup_errors', '1');
+error_reporting(E_ALL);
+
+// Define API base URL
+if (!defined('API_BASE_URL')) {
+    $base_url = 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1';
+} else {
+    $base_url = API_BASE_URL;
+}
+
+// Helper function to make API calls
+function make_api_request($method, $endpoint, $data = null) {
+    global $base_url;
+    
+    // Validate inputs to prevent null errors
+    if ($endpoint === null) {
+        $endpoint = '';
+    }
+    if ($base_url === null) {
+        $base_url = 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1';
+    }
+    
+    // Ensure endpoint starts with / if not already
+    if (is_string($endpoint) && strpos($endpoint, '/') !== 0 && strpos($endpoint, 'http') !== 0) {
+        $endpoint = '/' . $endpoint;
+    }
+    
+    $url = $base_url . $endpoint;
+    
+    $ch = curl_init($url);
+    
+    // For GET requests, use GET method; for POST, use POST
+    if ($method === 'GET') {
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPGET => true,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_SSL_VERIFYPEER => false,
+        ]);
+    } else {
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_SSL_VERIFYPEER => false,
+        ]);
+        
+        if ($method === 'POST' && $data !== null) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        }
+    }
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    if ($error) {
+        return ['success' => false, 'error' => $error];
+    }
+    
+    $decoded = json_decode($response, true);
+    return [
+        'success' => ($httpCode >= 200 && $httpCode < 300),
+        'data' => $decoded !== null ? $decoded : $response,
+        'http_code' => $httpCode
+    ];
+}
+
 global $wpdb;
 $endoftoday = date("Y-m-d"). ' 00:00:00';
 if(isset($_GET["airline"]) && !isset($_GET["route"]) && $_GET["airline"] != '' && $_GET["airline"] != 'null')
 {
-	$airline=$_GET["airline"];
-	$array_route_code = array();
-	$results_lastorder = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_management_sheet where airline_code='$airline' && dep_date > '$endoftoday' order by route asc"); 
-	$rowcount_orderinfo = 0;	
-		foreach($results_lastorder as $row_last_order){ 
-			$rowcount_orderinfo++;
-			$array_route_code[] = $row_last_order->route; // last order id
+	$airline = $_GET["airline"];
+	$airline_encoded = urlencode($airline);
+	
+	// Call API to get routes for the airline
+	$routes_response = make_api_request('GET', '/seat-availability/airlines/' . $airline_encoded . '/routes');
+	
+	$dropdown = "<select name='routeid' required id='routeid' onChange='updatedate(this.value)' style='width:100%; padding:10px;'>
+	<option value='' selected>Select</option>
+	";
+	
+	if ($routes_response['success'] && isset($routes_response['data'])) {
+		$routes_data = $routes_response['data']['data'];
+
+		// Handle different possible response structures
+		$routes = array();
+		if (isset($routes_data['routes']) && is_array($routes_data['routes'])) {
+			$routes = $routes_data['routes'];
+		} elseif (is_array($routes_data)) {
+			$routes = $routes_data;
 		}
 		
-		if($rowcount_orderinfo > 0)
-		{
-			$dropdown = "<select name='routeid' required id='routeid' onChange='updatedate(this.value)' style='width:100%; padding:10px;'>
-			<option value='' selected>Select</option>
-			";
-			$array_route_code = array_unique($array_route_code);
-			foreach($array_route_code as $value)
-			{ 
-				$dropdown .= "<option value='".$value."'>".$value."</option>";	
+		// Extract route values
+		$route_values = array();
+		foreach($routes as $route) {
+			if (is_array($route) || is_object($route)) {
+				$route_obj = (object)$route;
+				$route_value = isset($route_obj->route) ? $route_obj->route : (isset($route_obj->code) ? $route_obj->code : '');
+			} else {
+				$route_value = $route;
 			}
-			$dropdown .= "</select>";
+			if (!empty($route_value)) {
+				$route_values[] = $route_value;
+			}
 		}
-    echo $dropdown;
+		$route_values = array_unique($route_values);
+		sort($route_values);
+		
+		foreach($route_values as $value) {
+			$dropdown .= "<option value='".htmlspecialchars($value)."'>".htmlspecialchars($value)."</option>";
+		}
+	}
+	
+	$dropdown .= "</select>";
+	echo $dropdown;
 }
 if(isset($_GET["route"]) && $_GET["route"] != '' && $_GET["route"] != 'null')
 {
-	$airline=$_GET["airline"];
-	$route=$_GET["route"];
+	$airline = isset($_GET["airline"]) ? $_GET["airline"] : '';
+	$route = $_GET["route"];
 	$array_dates = array();
+	
+	// ✅ FIX: This section doesn't output anything - kept for backward compatibility
+	// Note: Date selection is handled by date picker in frontend
+	// OLD SQL QUERY - COMMENTED OUT (not needed as dates come from search results)
+	/*
 	$results_lastorder = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_management_sheet where airline_code='$airline' && dep_date > '$endoftoday' order by route asc"); 
-	$rowcount_orderinfo = $results_lastorder->num_rows;
+	$rowcount_orderinfo = is_array($results_lastorder) ? count($results_lastorder) : 0;
 	if($rowcount_orderinfo > 0)
 		{
 			foreach($results_lastorder as $row_last_order){   
 			   $array_dates[] = $row_last_order->dep_date;
 			}
-		}	
+		}
+	*/
+	
     $dropdown = "";
     echo $dropdown;
 	
@@ -306,5 +407,20 @@ if(isset($_GET["showresults"]))
 	$popup_results .= '</table><center>';
     
     echo $popup_results;
+} else {
+    // If no action parameter is set, show a message
+    // This file is typically called via AJAX with specific parameters
+    if (!isset($_GET['airline']) && !isset($_GET['route']) && !isset($_GET['showresults'])) {
+        echo "<div style='padding:20px; font-family:Arial, sans-serif;'>";
+        echo "<h2>Seat Availability Backend</h2>";
+        echo "<p>This page requires specific parameters:</p>";
+        echo "<ul>";
+        echo "<li><strong>?airline=XXX</strong> - Get routes for an airline</li>";
+        echo "<li><strong>?airline=XXX&route=YYY</strong> - Get dates for a route (no output)</li>";
+        echo "<li><strong>?showresults=1&airline=XXX&route=YYY&datefrom=...</strong> - Show search results</li>";
+        echo "</ul>";
+        echo "<p><small>This endpoint is typically called via AJAX from the frontend.</small></p>";
+        echo "</div>";
+    }
 }
 ?>

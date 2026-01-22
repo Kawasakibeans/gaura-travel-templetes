@@ -4,6 +4,95 @@
 * Template Post Type: post, page
 */
 
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+require_once( dirname( __FILE__, 5 ) . '/wp-config.php' );
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+
+// Fetch upcoming seat availability from API endpoint
+// API Endpoint: GET /v1/sales/upcoming-seats
+// Source: SalesDataDAL::getUpcomingSeats
+// Query parameters: optional travel_date_from, travel_date_to, pricing_category_id (default: 953), airline_code, min_remaining (default: 0), limit (default: 100, max 500), trip_code_like
+try {
+    // Build API endpoint URL
+    $api_url = API_BASE_URL;
+   
+    $endpoint = $api_url . '/sales/upcoming-seats';
+    
+    // Build query parameters
+    $query_params = [];
+    // travel_date_from defaults to today (handled by API)
+    // pricing_category_id defaults to '953' (handled by API)
+    // min_remaining defaults to 0 (handled by API)
+    // limit defaults to 100 (handled by API)
+    
+    $apiUrl = $endpoint;
+    if (!empty($query_params)) {
+        $apiUrl .= '?' . implode('&', $query_params);
+    }
+    
+    // Fetch data from API
+    $ch = curl_init($apiUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    
+    $api_response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    $trip_data = [];
+    
+    if ($http_code === 200 && $api_response) {
+        $apiData = json_decode($api_response, true);
+        
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            die('JSON decode error: ' . json_last_error_msg() . "<br>Raw response:<br>" . htmlspecialchars($api_response));
+        }
+        
+        // Check API response structure
+        if (isset($apiData['status']) && $apiData['status'] === 'success' && isset($apiData['data'])) {
+            // Process API response to match expected format
+            $trip_data = $apiData['data'];
+        } elseif (is_array($apiData) && isset($apiData[0])) {
+            // Response might be direct array
+            $trip_data = $apiData;
+        } else {
+            die('API returned unexpected format.<br>Full response:<br>' . htmlspecialchars($api_response));
+        }
+    } else {
+        die("API request failed with HTTP code $http_code.<br>Response:<br>" . htmlspecialchars($api_response));
+    }
+    
+} catch (Exception $e) {
+    die("API error: " . $e->getMessage());
+}
+
+// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+/*
+// Original SQL query for reference:
+// SELECT
+//     sa.trip_code,
+//     sa.travel_date,
+//     (sa.stock - sa.pax) AS remaining,
+//     wp.sale_price,
+//     MID(sa.trip_code, 9, 2) AS airline_code
+// FROM wpk4_backend_manage_seat_availability sa
+// LEFT JOIN wpk4_wt_price_category_relation wp
+//     ON sa.pricing_id = wp.pricing_id
+// WHERE sa.travel_date > CURRENT_DATE
+//   AND (sa.stock - sa.pax) > 0
+//   AND wp.pricing_category_id = '953'
+//   AND wp.sale_price IS NOT NULL
+// ORDER BY CAST(wp.sale_price AS DECIMAL(10, 2)) ASC,
+//          sa.travel_date ASC;
+//
+// Source: SalesDataDAL::getUpcomingSeats
+// Method: GET
+// Endpoint: /v1/sales/upcoming-seats
 
 global $wpdb;
 $trip_data = $wpdb->get_results("
@@ -14,7 +103,7 @@ $trip_data = $wpdb->get_results("
     WHERE sa.travel_date > CURRENT_DATE AND (sa.stock - sa.pax) > 0 and wp.sale_price is not null
     ORDER BY cast(wp.sale_price as float) ASC
 ");
-
+*/
 
 ?>
 

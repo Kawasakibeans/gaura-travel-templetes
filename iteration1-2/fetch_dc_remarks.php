@@ -2,30 +2,57 @@
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
-// Database connection
+// Load WordPress configuration to get API_BASE_URL
 require_once( dirname( __FILE__, 5 ) . '/wp-config.php' );
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    echo json_encode(['success' => false, 'error' => 'Database connection failed']);
-    exit;
-}
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    die("Database connection failed: " . $mysqli->connect_error);
-}
+$base_url = API_BASE_URL; // Fallback if not defined
 
 // Get parameters
-$case_id = isset($_POST['case_id']) ? $mysqli->real_escape_string($_POST['case_id']) : '';
-$reservation_ref = isset($_POST['reservation_ref']) ? $mysqli->real_escape_string($_POST['reservation_ref']) : '';
+$case_id = isset($_GET['case_id']) ? $_GET['case_id'] : '';
+$reservation_ref = isset($_GET['reservation_ref']) ? $_GET['reservation_ref'] : '';
 
-// Fetch remarks
-$query = "SELECT * FROM wpk4_backend_dc_remark 
-          WHERE case_id = '$case_id' AND reservation_ref = '$reservation_ref'
-          ORDER BY created_on DESC";
-$result = $mysqli->query($query);
+// Prepare API URL
+$apiUrl = $base_url . '/dc-remarks';
+$queryParams = http_build_query([
+    'case_id' => $case_id,
+    'reservation_ref' => $reservation_ref
+]);
+$fullUrl = $apiUrl . '?' . $queryParams;
 
-// HTML output with table
+// Initialize curl
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_URL, $fullUrl);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+// Optional: Add headers if needed, e.g., Authorization
+// curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$curlError = curl_error($ch);
+curl_close($ch);
+
+$remarks = [];
+$errorMessage = '';
+
+if ($response === false) {
+    $errorMessage = 'API request failed: ' . $curlError;
+} elseif ($httpCode >= 400) {
+    $errorMessage = 'API returned error ' . $httpCode;
+    $jsonResponse = json_decode($response, true);
+    if (isset($jsonResponse['message'])) {
+        $errorMessage .= ': ' . $jsonResponse['message'];
+    }
+} else {
+    $jsonResponse = json_decode($response, true);
+    if (isset($jsonResponse['data']['remarks'])) {
+        $remarks = $jsonResponse['data']['remarks'];
+    } else {
+        // Fallback if 'data' wrapper is missing or different
+        $remarks = $jsonResponse['remarks'] ?? []; 
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -68,38 +95,34 @@ $result = $mysqli->query($query);
 </head>
 <body>
 
-    
     <table class="remarks-table">
         <thead>
             <tr>
                 <th>Case ID</th>
                 <th>Reservation Ref</th>
                 <th>Remark</th>
-                
                 <th>Request Type</th>
                 <th>Remark Type</th>
                 <th>Reason</th>
-                
-                
                 <th>Created On</th>
                 <th>Created By</th>
             </tr>
         </thead>
         <tbody>
             <?php
-            if ($result && $result->num_rows > 0) {
-                while ($row = $result->fetch_assoc()) {
+            if (!empty($errorMessage)) {
+                echo '<tr><td colspan="8" class="no-remarks" style="color: red;">' . htmlspecialchars($errorMessage) . '</td></tr>';
+            } elseif (!empty($remarks)) {
+                foreach ($remarks as $row) {
                     echo '<tr>';
-                    echo '<td>' . htmlspecialchars($row['case_id']) . '</td>';
-                    echo '<td>' . htmlspecialchars($row['reservation_ref']) . '</td>';
-                    echo '<td>' . nl2br(htmlspecialchars($row['remark'])) . '</td>';
-                    
-                    echo '<td>' . nl2br(htmlspecialchars($row['request_type'])) . '</td>';
-                    echo '<td>' . nl2br(htmlspecialchars($row['remark_type'])) . '</td>';
-                    echo '<td>' . nl2br(htmlspecialchars($row['failed_reason'])) . '</td>';
-                    
-                    echo '<td>' . htmlspecialchars($row['created_on']) . '</td>';
-                    echo '<td>' . htmlspecialchars($row['created_by']) . '</td>';
+                    echo '<td>' . htmlspecialchars($row['case_id'] ?? '') . '</td>';
+                    echo '<td>' . htmlspecialchars($row['reservation_ref'] ?? '') . '</td>';
+                    echo '<td>' . nl2br(htmlspecialchars($row['remark'] ?? '')) . '</td>';
+                    echo '<td>' . nl2br(htmlspecialchars($row['request_type'] ?? '')) . '</td>';
+                    echo '<td>' . nl2br(htmlspecialchars($row['remark_type'] ?? '')) . '</td>';
+                    echo '<td>' . nl2br(htmlspecialchars($row['failed_reason'] ?? '')) . '</td>';
+                    echo '<td>' . htmlspecialchars($row['created_on'] ?? '') . '</td>';
+                    echo '<td>' . htmlspecialchars($row['created_by'] ?? '') . '</td>';
                     echo '</tr>';
                 }
             } else {
@@ -109,8 +132,5 @@ $result = $mysqli->query($query);
         </tbody>
     </table>
 
-    <?php
-    $mysqli->close();
-    ?>
 </body>
 </html>

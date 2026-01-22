@@ -8,6 +8,45 @@
  * @since Twenty Twenty 1.0
  */
 get_header();
+
+// Load WordPress to get API_BASE_URL constant from wp-config.php
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+
+// Get API base URL (should be defined in wp-config.php)
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1';
+
+// Helper function to call API
+function callAPI($url, $method = 'GET', $data = null) {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    
+    if ($method === 'POST' || $method === 'PUT') {
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        if ($data) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        }
+    }
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+    
+    if ($curlError) {
+        error_log("API call failed: $curlError");
+        return ['error' => $curlError, 'http_code' => $httpCode];
+    }
+    
+    if ($httpCode >= 200 && $httpCode < 300) {
+        return json_decode($response, true);
+    }
+    
+    error_log("API call returned HTTP $httpCode: " . substr($response, 0, 500));
+    return ['error' => 'HTTP ' . $httpCode, 'response' => $response];
+}
 ?>
 <div class='wpb_column vc_column_container vc_col-sm-12' id='manage_bookings' style='width:90%;margin:auto;padding:100px 0px;'>
 <?php
@@ -18,9 +57,11 @@ wp_get_current_user();
 $current_date_and_time = date("Y-m-d H:i:s");
 include('wp-config-custom.php');
 
+// Check IP (keep original query or create API endpoint)
 $query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='$ip_address'";
 $result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
 $row_ip_selection = mysqli_fetch_assoc($result_ip_selection);
+
 if(mysqli_num_rows($result_ip_selection) > 0)
 {
     $currnt_userlogin = $current_user->user_login;
@@ -50,27 +91,27 @@ if(mysqli_num_rows($result_ip_selection) > 0)
     	    <tr>
     	        <td width='8%'>
     			    Customer ID</br>
-    			    <input type='text' name='customer_id_selector' value='<?php if(isset($_GET['customer_id'])) { echo $_GET['customer_id']; } ?>' id='customer_id_selector'>
+    			    <input type='text' name='customer_id_selector' value='<?php if(isset($_GET['customer_id'])) { echo htmlspecialchars($_GET['customer_id']); } ?>' id='customer_id_selector'>
     		    </td>
     		    <td width='8%'>
     			    Family ID</br>
-    			    <input type='text' name='family_id_selector' value='<?php if(isset($_GET['family_id'])) { echo $_GET['family_id']; } ?>' id='family_id_selector'>
+    			    <input type='text' name='family_id_selector' value='<?php if(isset($_GET['family_id'])) { echo htmlspecialchars($_GET['family_id']); } ?>' id='family_id_selector'>
     		    </td>
     		    <td width='8%'>
     			    Trams Profile ID</br>
-    			    <input type='text' name='profile_id_selector' value='<?php if(isset($_GET['profile_id'])) { echo $_GET['profile_id']; } ?>' id='profile_id_selector'>
+    			    <input type='text' name='profile_id_selector' value='<?php if(isset($_GET['profile_id'])) { echo htmlspecialchars($_GET['profile_id']); } ?>' id='profile_id_selector'>
     		    </td>
     		    <td width='8%'>
     			    Order ID</br>
-    			    <input type='text' name='order_id_selector' value='<?php if(isset($_GET['order_id'])) { echo $_GET['order_id']; } ?>' id='order_id_selector'>
+    			    <input type='text' name='order_id_selector' value='<?php if(isset($_GET['order_id'])) { echo htmlspecialchars($_GET['order_id']); } ?>' id='order_id_selector'>
     		    </td>
     		    <td width='8%'>
     			    Email</br>
-    			    <input type='text' name='email_id_selector' value='<?php if(isset($_GET['email_id'])) { echo $_GET['email_id']; } ?>' id='email_id_selector'>
+    			    <input type='text' name='email_id_selector' value='<?php if(isset($_GET['email_id'])) { echo htmlspecialchars($_GET['email_id']); } ?>' id='email_id_selector'>
     		    </td>
     		    <td width='8%'>
     			    Phone</br>
-    			    <input type='text' name='phone_selector' value='<?php if(isset($_GET['phone'])) { echo $_GET['phone']; } ?>' id='phone_selector'>
+    			    <input type='text' name='phone_selector' value='<?php if(isset($_GET['phone'])) { echo htmlspecialchars($_GET['phone']); } ?>' id='phone_selector'>
     		    </td>
     		</tr>
     		<tr>
@@ -90,60 +131,29 @@ if(mysqli_num_rows($result_ip_selection) > 0)
 		$email_id_filter = ($_GET['email_id'] ?? false) ? $_GET['email_id'] : '' ;
 		$phone_filter = ($_GET['phone'] ?? false) ? $_GET['phone'] : '' ;
 		
-		if(isset($customer_id_filter) && $customer_id_filter != '')
-		{
-			$customer_id_sql = "passenger.customer_id = '".$customer_id_filter."' AND ";
+		// Build API query parameters
+		$apiParams = [];
+		if (!empty($customer_id_filter)) {
+		    $apiParams['customer_id'] = $customer_id_filter;
 		}
-		else
-		{
-			$customer_id_sql = "passenger.customer_id IS NOT NULL AND ";
+		if (!empty($family_id_filter)) {
+		    $apiParams['family_id'] = $family_id_filter;
 		}
+		if (!empty($profile_id_filter)) {
+		    $apiParams['profile_id'] = $profile_id_filter;
+		}
+		if (!empty($order_id_filter)) {
+		    $apiParams['order_id'] = $order_id_filter;
+		}
+		if (!empty($email_id_filter)) {
+		    $apiParams['email'] = $email_id_filter;
+		}
+		if (!empty($phone_filter)) {
+		    $apiParams['phone'] = $phone_filter;
+		}
+		$apiParams['limit'] = 10;
 		
-		if(isset($family_id_filter) && $family_id_filter != '')
-		{
-			$family_id_sql = "passenger.family_id = '".$family_id_filter."' AND ";
-		}
-		else
-		{
-			$family_id_sql = "passenger.customer_id IS NOT NULL AND ";
-		}
-		
-		if(isset($profile_id_filter) && $profile_id_filter != '')
-		{
-			$profile_id_sql = "passenger.trams_profile_id = '".$profile_id_filter."' AND ";
-		}
-		else
-		{
-			$profile_id_sql = "passenger.customer_id IS NOT NULL AND ";
-		}
-		
-		if(isset($order_id_filter) && $order_id_filter != '')
-		{
-			$order_id_sql = "bookings.order_id = '".$order_id_filter."' AND ";
-		}
-		else
-		{
-			$order_id_sql = "passenger.customer_id IS NOT NULL AND ";
-		}
-		
-		if(isset($email_id_filter) && $email_id_filter != '')
-		{
-			$email_id_sql = "passenger.email_address = '".$email_id_filter."' AND ";
-		}
-		else
-		{
-			$email_id_sql = "passenger.customer_id IS NOT NULL AND ";
-		}
-		
-		if(isset($phone_filter) && $phone_filter != '')
-		{
-			$phone_sql = "passenger.phone_number = '".$phone_filter."'";
-		}
-		else
-		{
-			$phone_sql = "passenger.customer_id IS NOT NULL";
-		}
-		
+		// Check if any filters are provided
 		if(
 		    (isset($customer_id_filter) && $customer_id_filter != '') ||
 		    (isset($family_id_filter) && $family_id_filter != '') ||
@@ -153,47 +163,21 @@ if(mysqli_num_rows($result_ip_selection) > 0)
 		    (isset($phone_filter) && $phone_filter != '')
 		  ) 
 		{
-			$query = "SELECT passenger.customer_id, passenger.family_id, passenger.fname, passenger.lname, passenger.email_address, passenger.phone_number, bookings.order_id 
-			    FROM wpk4_backend_travel_passenger passenger
-			    LEFT JOIN wpk4_backend_travel_passenger_address ads ON 
-				    ads.address_id = passenger.address_id 
-				
-				LEFT JOIN wpk4_backend_travel_booking_pax pax ON 
-                    pax.fname = passenger.fname AND 
-                    pax.email_pax = passenger.email_address
-                    
-			    LEFT JOIN wpk4_backend_travel_bookings bookings ON 
-                    bookings.order_id = pax.order_id
-
-				where 
-					$customer_id_sql
-                    $family_id_sql
-                    $profile_id_sql
-                    $order_id_sql
-                    $email_id_sql
-                    $phone_sql
-				order by passenger.customer_id desc LIMIT 10";
+		    // Call API to search customers
+		    $apiUrl = $base_url . '/customers/search?' . http_build_query($apiParams);
+		    $customersApiResult = callAPI($apiUrl, 'GET');
+		    
+		    $customers = [];
+		    if ($customersApiResult && isset($customersApiResult['status']) && $customersApiResult['status'] === 'success') {
+		        $customers = $customersApiResult['data']['customers'] ?? [];
+		    }
 		}
 		else
 		{
-		    $query = "SELECT passenger.customer_id, passenger.family_id, passenger.fname, passenger.lname, passenger.email_address, passenger.phone_number, bookings.order_id 
-		    FROM wpk4_backend_travel_passenger passenger
-			    LEFT JOIN wpk4_backend_travel_passenger_address ads ON 
-				    ads.address_id = passenger.address_id 
-			    LEFT JOIN wpk4_backend_travel_bookings bookings ON 
-                    passenger.family_id = bookings.family_id   
-                LEFT JOIN wpk4_backend_travel_booking_pax pax ON 
-					passenger.customer_id = pax.customer_id
-				
-				order by passenger.customer_id desc LIMIT 10";
-			echo '</br><center><p style="color:red;">Kindly add the filters to check the records individually.</p></center>';
+		    echo '</br><center><p style="color:red;">Kindly add the filters to check the records individually.</p></center>';
+		    $customers = [];
 		}
-		//echo $query;		
-		$selection_query = $query;
-		$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-		$row_counter_ticket = mysqli_num_rows($result);
-		$auto_numbering = 1;
-		$total_paxs = 0;
+		
 		?>
 		</br>
 		<table class="table table-striped" style="width:100%; margin:auto;font-size:14px;">
@@ -209,30 +193,34 @@ if(mysqli_num_rows($result_ip_selection) > 0)
 			<tbody>
         	    <form action="#" name="statusupdate" method="post" enctype="multipart/form-data">
             		<?php
-            		while($row = mysqli_fetch_assoc($result))
+            		$row_counter_ticket = count($customers);
+            		$auto_numbering = 1;
+            		$total_paxs = 0;
+            		
+            		foreach($customers as $row)
             		{
-            			$customer_id = $row['customer_id'];
-            		    $family_id = $row['family_id'];
-            			$fullname = $row['fname'] . ' ' .$row['lname'];
-            			$email_id = $row['email_address'];
-            			$order_id = $row['order_id'];
-            			$phone_number = $row['phone_number'];
+            			$customer_id = $row['customer_id'] ?? '';
+            		    $family_id = $row['family_id'] ?? '';
+            			$fullname = ($row['fname'] ?? '') . ' ' . ($row['lname'] ?? '');
+            			$email_id = $row['email_address'] ?? '';
+            			$order_id = $row['order_id'] ?? '';
+            			$phone_number = $row['phone_number'] ?? '';
             			?>
             			<tr>
                 			<td width='6%'>
-                                <?php echo $customer_id; ?>            	
+                                <?php echo htmlspecialchars($customer_id); ?>            	
                             </td>
                             <td width='15%'>
-                                <?php echo $fullname; ?>            	
+                                <?php echo htmlspecialchars($fullname); ?>            	
                             </td>
                             <td width='15%'>
-                                <?php echo $email_id; ?>            	
+                                <?php echo htmlspecialchars($email_id); ?>            	
                             </td>
                             <td width='15%'>
-                                <?php echo $phone_number; ?>            	
+                                <?php echo htmlspecialchars($phone_number); ?>            	
                             </td>
                             <td width='15%'>
-                                <?php echo $order_id; ?>            	
+                                <?php echo htmlspecialchars($order_id); ?>            	
                             </td>
             		    </tr>
             			<?php

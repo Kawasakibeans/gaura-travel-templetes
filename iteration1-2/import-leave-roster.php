@@ -20,64 +20,35 @@ date_default_timezone_set('Australia/Melbourne');
 
 /* ====== CONFIG ====== */
 $table = 'wpk4_backend_employee_roster_leaves_approval';
-$DRY_RUN = isset($_POST['dryrun']) ? ($_POST['dryrun'] === '1') : true; // default: preview first
+$DRY_RUN = isset($_POST['dryrun']) ? true: false; // default: preview first
+/* ====== Load WP config for API_BASE_URL ====== */
+$php_config_path = '/home/gt1ybwhome/public_html/wp-config.php';
+if (!file_exists($php_config_path)) { 
+    // Fallback logic or error
+    $guess_paths = [
+        __DIR__ . '/wp-config.php',
+        dirname(__FILE__, 2) . '/wp-config.php',
+        dirname(__FILE__, 3) . '/wp-config.php',
+        dirname(__FILE__, 4) . '/wp-config.php',
+        dirname(__FILE__, 5) . '/wp-config.php',
+    ];
+    foreach ($guess_paths as $p) {
+        if (is_file($p)) { $php_config_path = $p; break; }
+    }
+}
 
-/* --- Find & load WordPress DB --- */
-$guess_paths = [
-  __DIR__ . '/wp-config.php',
-  dirname(__FILE__, 2) . '/wp-config.php',
-  dirname(__FILE__, 3) . '/wp-config.php',
-  dirname(__FILE__, 4) . '/wp-config.php',
-  dirname(__FILE__, 5) . '/wp-config.php',
-];
-$wp_loaded = false;
-foreach ($guess_paths as $p) {
-  if (is_file($p)) { require_once $p; $wp_loaded = true; break; }
+if (file_exists($php_config_path)) {
+    require_once $php_config_path;
+} else {
+    http_response_code(500);
+    echo "<h3>wp-config.php not found</h3>";
+    exit;
 }
-if (!$wp_loaded) {
-  http_response_code(500);
-  echo "<h3>wp-config.php not found</h3><p>Please adjust the path detection near the top of the script.</p>";
-  exit;
-}
-global $wpdb;
+
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'http://localhost/api';
 
 /* ====== Helpers ====== */
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
-
-/** Parse many date formats seen in exports. Returns 'Y-m-d' or null. */
-function parse_au_date(?string $raw): ?string {
-  if (!$raw) return null;
-  $raw = trim($raw);
-  $raw = preg_replace('/\s+/', ' ', $raw);
-  // Remove time if present like "00:00:00"
-  $raw_no_time = preg_replace('/\s+\d{1,2}:\d{2}:\d{2}$/', '', $raw);
-
-  $try = [$raw, $raw_no_time];
-  $fmts = ['d/m/Y H:i:s', 'd/m/Y', 'Y-m-d H:i:s', 'Y-m-d', 'd-m-Y', 'm/d/Y', 'j/n/Y', 'j/m/Y'];
-
-  foreach ($try as $t) {
-    foreach ($fmts as $f) {
-      $dt = DateTime::createFromFormat($f, $t);
-      if ($dt && $dt->format($f) === $t) return $dt->format('Y-m-d');
-    }
-  }
-  // last resort: strtotime
-  $ts = strtotime($raw);
-  return $ts ? date('Y-m-d', $ts) : null;
-}
-
-/** Inclusive date span iterator returning Y-m-d strings. */
-function expand_dates(string $fromYmd, string $toYmd): array {
-  $out = [];
-  $start = new DateTime($fromYmd);
-  $end   = new DateTime($toYmd);
-  if ($start > $end) { [$start, $end] = [$end, $start]; } // safety
-  while ($start <= $end) {
-    $out[] = $start->format('Y-m-d');
-    $start->modify('+1 day');
-  }
-  return $out;
-}
 
 /** Map headers -> canonical keys (case-insensitive, trims BOM/spaces) */
 function normalize_headers(array $hdrs): array {
@@ -158,94 +129,64 @@ foreach ($need as $canon => $aliases) {
   $idx[$canon] = $found;
 }
 
-/* ====== Prepare insert (wpdb) ====== */
-$sql = "
-  INSERT INTO {$table}
-  (doc_no, employee_code, employee_name, leave_type,
-   from_date, from_date_value, till_date, till_date_value,
-   remarks, current_status, day_seq, created_at)
-  VALUES
-  (%s, %s, %s, %s,
-   %s, %s, %s, %s,
-   %s, %s, %d, NOW())
-";
-$inserted = 0;
-$skipped  = 0;
-$preview  = [];
-
 /* ====== Process rows ====== */
+$rowsToImport = [];
+
 while (($row = fgetcsv($fh, 0, ',')) !== false) {
   // Skip blank lines
   if (count(array_filter($row, fn($v) => trim((string)$v) !== '')) === 0) continue;
 
-  $docno    = trim((string)($row[$idx['docno']]           ?? ''));
-  $ecode    = trim((string)($row[$idx['employee_code']]   ?? ''));
-  $ename    = trim((string)($row[$idx['employee_name']]   ?? ''));
-  $ltype    = trim((string)($row[$idx['leave_type']]      ?? ''));
-  $fraw     = trim((string)($row[$idx['from_date']]       ?? ''));
-  $fdv      = trim((string)($row[$idx['from_date_value']] ?? ''));
-  $traw     = trim((string)($row[$idx['till_date']]       ?? ''));
-  $tdv      = trim((string)($row[$idx['till_date_value']] ?? ''));
-  $remark   = trim((string)($row[$idx['remarks']]         ?? ''));
-  $status   = trim((string)($row[$idx['current_status']]  ?? ''));
-
-  $fromYmd  = parse_au_date($fraw);
-  $toYmd    = parse_au_date($traw);
-
-  if (!$fromYmd || !$toYmd) {
-    $skipped++;
-    $preview[] = [
-      'doc_no' => $docno,
-      'employee_code' => $ecode,
-      'error' => "Unparseable dates: From='{$fraw}' To='{$traw}'"
-    ];
-    continue;
-  }
-
-  $days = expand_dates($fromYmd, $toYmd);
-  $seq = 0;
-  foreach ($days as $d) {
-    $seq++;
-    // Per-day: from_date = till_date = that day (00:00:00)
-    $fromDt = $d . ' 00:00:00';
-    $tillDt = $d . ' 00:00:00';
-
-    if ($DRY_RUN) {
-      $preview[] = [
-        'doc_no'         => $docno,
-        'employee_code'  => $ecode,
-        'employee_name'  => $ename,
-        'leave_type'     => $ltype,
-        'from_date'      => $fromDt,
-        'from_value'     => $fdv ?: 'FD',
-        'till_date'      => $tillDt,
-        'till_value'     => $tdv ?: 'FD',
-        'remarks'        => $remark,
-        'current_status' => $status,
-        'day_seq'        => $seq,
-      ];
-    } else {
-      $ok = $wpdb->query($wpdb->prepare(
-        $sql,
-        $docno, $ecode, $ename, $ltype,
-        $fromDt, ($fdv ?: 'FD'), $tillDt, ($tdv ?: 'FD'),
-        $remark, $status, $seq
-      ));
-      if ($ok === false) {
-        $skipped++;
-        $preview[] = [
-          'doc_no' => $docno,
-          'employee_code' => $ecode,
-          'error' => 'DB insert failed: ' . $wpdb->last_error,
-          'row' => compact('ename','ltype','fromDt','tillDt','remark','status','seq')
-        ];
-      } else {
-        $inserted++;
-      }
-    }
-  }
+  $rowsToImport[] = [
+      'doc_no'          => trim((string)($row[$idx['docno']]           ?? '')),
+      'employee_code'   => trim((string)($row[$idx['employee_code']]   ?? '')),
+      'employee_name'   => trim((string)($row[$idx['employee_name']]   ?? '')),
+      'leave_type'      => trim((string)($row[$idx['leave_type']]      ?? '')),
+      'from_date'       => trim((string)($row[$idx['from_date']]       ?? '')),
+      'from_date_value' => trim((string)($row[$idx['from_date_value']] ?? '')),
+      'till_date'       => trim((string)($row[$idx['till_date']]       ?? '')),
+      'till_date_value' => trim((string)($row[$idx['till_date_value']] ?? '')),
+      'remarks'         => trim((string)($row[$idx['remarks']]         ?? '')),
+      'current_status'  => trim((string)($row[$idx['current_status']]  ?? '')),
+  ];
 }
 fclose($fh);
+
+/* ====== Call API ====== */
+$apiUrl = $base_url . '/leave-roster/import';
+$payload = [
+    'rows' => $rowsToImport,
+    'dry_run' => $DRY_RUN
+];
+
+$ch = curl_init($apiUrl);
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => json_encode($payload),
+    CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+    CURLOPT_FOLLOWLOCATION => true
+]);
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+$result = null;
+$inserted = 0;
+$skipped = 0;
+$preview = [];
+
+if ($response && $httpCode < 400) {
+    $json = json_decode($response, true);
+    if (isset($json['data'])) {
+        $result = $json['data'];
+        $inserted = $result['inserted'] ?? 0;
+        $skipped = $result['skipped'] ?? 0;
+        $preview = $result['preview'] ?? [];
+    }
+} else {
+    echo "<p>API Error: " . h($response) . " (Code: $httpCode)</p>";
+}
+
 
 /* ====== Result ====== */
 echo "<h3>".($DRY_RUN ? 'DRY RUN (no inserts)' : 'Import complete')."</h3>";
@@ -255,7 +196,10 @@ if (!empty($preview)) {
   echo "<details open><summary>Preview (" . count($preview) . " rows)</summary>";
   echo "<style>table{border-collapse:collapse;max-width:100%;overflow:auto;display:block}td,th{border:1px solid #ccc;padding:6px;font:12px/1.3 monospace;white-space:nowrap}</style>";
   echo "<table><thead><tr>";
-  foreach (array_keys($preview[0]) as $key) echo "<th>".h($key)."</th>";
+  // Assuming first row has all keys we want to show. If not, might need better key extraction.
+  if (isset($preview[0])) {
+      foreach (array_keys($preview[0]) as $key) echo "<th>".h($key)."</th>";
+  }
   echo "</tr></thead><tbody>";
   foreach ($preview as $r) {
     echo "<tr>";

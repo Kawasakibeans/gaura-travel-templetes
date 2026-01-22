@@ -55,7 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['product_id']) && isset(
 if (isset($_GET['query'])) {
     global $wpdb;
     $search_term = sanitize_text_field($_GET['query']);
-
+    
     // Fetch users whose usernames match the input
     $users = $wpdb->get_results(
         $wpdb->prepare(
@@ -104,14 +104,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;*/
 
         
-        $mail = new PHPMailer();
+        $mail = new PHPMailer(true); // Enable exceptions
         $mail->isSMTP();
         $mail->Host = 'smtp.office365.com';
         $mail->Port = 587;
         $mail->SMTPAuth = true;
         $mail->Username = 'donotreply@gauratravel.com.au';
-		$mail->Password = 'P/738625763818ob';
-        $mail->SMTPSecure = 'tls';
+        $mail->Password = 'P/738625763818ob';
+        $mail->SMTPSecure = 'tls'; // Use string for better compatibility
         $mail->SMTPOptions = array(
             'ssl' => array(
                 'verify_peer' => false,
@@ -119,9 +119,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'allow_self_signed' => true
             )
         );
+        $mail->SMTPKeepAlive = true;
+        $mail->Timeout = 30;
+        $mail->CharSet = 'UTF-8';
         $mail->From = 'donotreply@gauratravel.com.au';
         $mail->FromName = 'Gaura Travel';
-        //$mail->SMTPDebug  = 2;
+        // Enable debug mode for troubleshooting
+        // Uncomment the next 2 lines to see detailed SMTP connection info
+        // $mail->SMTPDebug = 2;
+        // $mail->Debugoutput = function($str, $level) { echo "SMTP: $str\n"; };
+        
+        // Alternative: Use OAuth2 or check if SMTP AUTH is enabled for this mailbox
         $mail->addAddress($email, 'Passenger');
         //$mail->addAddress('sriharshans@gauratravel.com.au', 'Passenger');
         //$mail->addAddress('leen@gauratravel.com.au', 'Passenger');
@@ -134,10 +142,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             if ($mail->send()) {
                 echo json_encode(['success' => "Email sent to $email"]);
-                //exit;
+                exit;
             } else {
                 echo json_encode(['error' => 'Email failed: ' . $mail->ErrorInfo]);
-                //exit;
+                exit;
             }
         } catch (Exception $e) {
             echo json_encode(['error' => 'Mailer Exception: ' . $e->getMessage()]);
@@ -177,14 +185,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;*/
 
         
-        $mail = new PHPMailer();
+        $mail = new PHPMailer(true); // Enable exceptions
         $mail->isSMTP();
         $mail->Host = 'smtp.office365.com';
         $mail->Port = 587;
         $mail->SMTPAuth = true;
         $mail->Username = 'donotreply@gauratravel.com.au';
-		$mail->Password = 'P/738625763818ob';
-        $mail->SMTPSecure = 'tls';
+        $mail->Password = 'P/738625763818ob';
+        $mail->SMTPSecure = 'tls'; // Use string for better compatibility
         $mail->SMTPOptions = array(
             'ssl' => array(
                 'verify_peer' => false,
@@ -192,9 +200,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'allow_self_signed' => true
             )
         );
+        $mail->SMTPKeepAlive = true;
+        $mail->Timeout = 30;
+        $mail->CharSet = 'UTF-8';
         $mail->From = 'donotreply@gauratravel.com.au';
         $mail->FromName = 'Gaura Travel';
-        //$mail->SMTPDebug  = 2;
+        // Enable debug mode for troubleshooting
+        // Uncomment the next 2 lines to see detailed SMTP connection info
+        // $mail->SMTPDebug = 2;
+        // $mail->Debugoutput = function($str, $level) { echo "SMTP: $str\n"; };
+        
+        // Alternative: Use OAuth2 or check if SMTP AUTH is enabled for this mailbox
         $mail->addAddress($email, 'Passenger');
         //$mail->addAddress('sriharshans@gauratravel.com.au', 'Passenger');
         //$mail->addAddress('leen@gauratravel.com.au', 'Passenger');
@@ -207,10 +223,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             if ($mail->send()) {
                 echo json_encode(['success' => "Email sent to $email"]);
-                //exit;
+                exit;
             } else {
                 echo json_encode(['error' => 'Email failed: ' . $mail->ErrorInfo]);
-                //exit;
+                exit;
             }
         } catch (Exception $e) {
             echo json_encode(['error' => 'Mailer Exception: ' . $e->getMessage()]);
@@ -294,5 +310,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['phone'])) {
 }
 */
 
+// Default error response for unmatched requests
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    echo json_encode([
+        'error' => 'Invalid request',
+        'message' => 'This API requires specific parameters',
+        'available_endpoints' => [
+            'GET' => [
+                'product_info' => '?product_id=XXX&travel_date=YYYY-MM-DD',
+                'user_search' => '?query=search_term'
+            ],
+            'POST' => [
+                'send_quote_email' => 'action=send_quote_email&email=XXX&url=XXX&paxname=XXX&agentname=XXX',
+                'send_quote_email_multicity' => 'action=send_quote_email_multicity&email=XXX&url=XXX&paxname=XXX&agentname=XXX',
+                'update_quote_status' => 'phone=XXX'
+            ]
+        ]
+    ]);
+} else {
     echo json_encode(['error' => 'Invalid request method']);
-    exit;
+}
+exit;

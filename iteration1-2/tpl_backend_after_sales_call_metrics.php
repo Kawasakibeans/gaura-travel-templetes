@@ -8,187 +8,319 @@ ini_set('display_errors', 1);
 
 require_once(dirname(__FILE__, 5) . '/wp-config.php');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    echo "Database connection failed";
-    exit;
-}
+$apiBase = defined('API_BASE_URL') ? rtrim(API_BASE_URL, '/') : 'https://gauratravel.com.au/api';
 
 // Date filter and agent filter from GET params
 $startDate = $_GET['start_date'] ?? date('Y-m-01');
 $endDate   = $_GET['end_date']   ?? date('Y-m-t');
 $selected_agent = $_GET['agent_name'] ?? '';
 
-// Fetch distinct agents for dropdown
-$agentResult = $mysqli->query("
-    SELECT DISTINCT agent_name
-    FROM wpk4_backend_agent_codes
-    WHERE location = 'BOM' AND status = 'active'
-    ORDER BY agent_name ASC
-");
-$agents = [];
-if ($agentResult) {
-    while ($row = $agentResult->fetch_assoc()) {
-        $agents[] = $row['agent_name'];
+function api_get_json($endpoint, $query = [])
+{
+    $url = $endpoint . (strpos($endpoint, '?') === false ? '?' : '&') . http_build_query($query);
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+    ]);
+    $body = curl_exec($ch);
+    $err  = curl_error($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($body === false) {
+        throw new Exception("API call failed: $err");
     }
+    $decoded = json_decode($body, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception("Invalid JSON from API ($code): " . json_last_error_msg());
+    }
+    if ($code < 200 || $code >= 300) {
+        $msg = $decoded['message'] ?? "HTTP $code";
+        throw new Exception("API error: $msg");
+    }
+    return $decoded;
+}
+
+// Fetch distinct agents for dropdown via API
+$agents = [];
+try {
+    $respAgents = api_get_json(
+        $apiBase . '/agent-codes-agent-names',
+        ['location' => 'BOM', 'status' => 'active', 'limit' => 500]
+    );
+    $agentData = $respAgents['data'] ?? $respAgents['agents'] ?? [];
+    foreach ($agentData as $row) {
+        if (isset($row['agent_name'])) {
+            $agents[] = $row['agent_name'];
+        } elseif (is_string($row)) {
+            $agents[] = $row;
+        }
+    }
+    sort($agents);
+} catch (Exception $e) {
+    // Fallback: empty list; UI will show All Agents only
+    $agents = [];
 }
 
 /**
  * Fetch data grouped by date for a given date range and optional day range & agent filter
- * NOTE: total_acw is CHAR like '206 seconds' → parse with SUBSTRING_INDEX and CAST to seconds.
  */
-function fetchDataByDate($mysqli, $startDate, $endDate, $startDay = null, $endDay = null, $agent = '') {
-    $dateCondition = "`date` BETWEEN '$startDate' AND '$endDate'";
-    if ($startDay && $endDay) {
-        $dateCondition .= " AND DAY(`date`) BETWEEN $startDay AND $endDay";
+function fetchDataByDate($apiBase, $startDate, $endDate, $startDay = null, $endDay = null, $agent = '') {
+    // Pull data from API and locally aggregate by date to mimic the original SQL
+    $queryParams = [
+        'start_date' => $startDate,
+        'end_date'   => $endDate,
+        'location'   => 'BOM',
+        'status'     => 'active',
+        'limit'      => 5000,
+        'offset'     => 0,
+    ];
+    if (!empty($agent)) {
+        $queryParams['agent_name'] = $agent;
     }
-    if ($agent !== '') {
-        $agentEscaped = $mysqli->real_escape_string($agent);
-        $dateCondition .= " AND agent_name = '$agentEscaped'";
-    }
 
-    $query = "
-        SELECT 
-            `date`,
-            SUM(inb_call_count)                                  AS inb_call_count,
-            SUM(sales_aht)                                  AS sales_aht,
-            SUM(gtmd_aht)                                  AS gtmd_aht,
-            SUM(inb_call_count_duration)                         AS inb_call_count_duration,
-            SUM(gtcs)                                            AS gtcs,
-            SUM(gtpy)                                            AS gtpy,
-            SUM(gtet)                                            AS gtet,
-            SUM(gtdc)                                            AS gtdc,
-            SUM(gtrf)                                            AS gtrf,
-            SUM(gtib)                                            AS gtib,
-            SUM(gtmd)                                            AS gtmd,
-            /* Parse 'NNN seconds' to numeric seconds and sum */
-            SUM(CAST(SUBSTRING_INDEX(total_acw, ' ', 1) AS UNSIGNED)) AS total_acw_seconds
-        FROM wpk4_agent_after_sale_productivity_report
-        WHERE $dateCondition
-        GROUP BY `date`
-        ORDER BY `date` ASC
-    ";
+    // Call main API for date-grouped data - API now returns all required fields
+    $resp = api_get_json($apiBase . '/after-sale-productivity-report', $queryParams);
+    $rows = $resp['data'] ?? $resp['records'] ?? $resp['report'] ?? [];
 
-    $result = $mysqli->query($query);
-    $data = [];
-    if ($result) {
-        while ($row = $result->fetch_assoc()) {
-            $inb_calls = (int)$row['inb_call_count'];
-            $gtib_calls = (int)$row['gtib'];
-            $gtmd_calls = (int)$row['gtmd'];
-            $sum_dur   = (int)$row['inb_call_count_duration']; // seconds
-            $sum_dur_sales   = (int)$row['sales_aht']; // seconds
-            $sum_dur_sales_gtmd   = (int)$row['gtmd_aht']; // seconds
-            $sum_acw   = (int)$row['total_acw_seconds'];       // seconds
+    $byDate = [];
+    foreach ($rows as $row) {
+        $date = $row['date'] ?? $row['call_date'] ?? null;
+        if (!$date) {
+            continue;
+        }
+        // Day filter if provided
+        $day = (int)date('j', strtotime($date));
+        if ($startDay !== null && $endDay !== null) {
+            if ($day < $startDay || $day > $endDay) {
+                continue;
+            }
+        }
 
-            $total_campaign = (int)$row['gtcs'] + (int)$row['gtpy'] + (int)$row['gtet'] + (int)$row['gtdc'] + (int)$row['gtrf']+ (int)$row['gtib']+ (int)$row['gtmd'];
-            $aht = ($inb_calls > 0) ? round($sum_dur / $inb_calls) : 0; // seconds per call
-            $gtib_aht = ($gtib_calls > 0) ? round($sum_dur_sales / $gtib_calls) : 0; // seconds per call
-            $gtmd_aht = ($gtmd_calls > 0) ? round($sum_dur_sales_gtmd / $gtmd_calls) : 0; // seconds per call
-            $acw = ($inb_calls > 0) ? round($sum_acw / $inb_calls) : 0; // seconds per call
-
-            $data[] = [
-                'date'                      => $row['date'],
-                'inb_call_count'            => $inb_calls,
-                'inb_call_count_duration'   => $sum_dur,  // raw total seconds for weighted avg
-                'sales_aht'                 => $sum_dur_sales,  // raw total seconds for weighted avg
-                'gtmd_duration'                 => $sum_dur_sales_gtmd,  // raw total seconds for weighted avg
-                'aht'                       => $aht,      // per-day average (display)
-                'gtib_aht'                       => $gtib_aht,      // per-day average (display)
-                'gtmd_aht'                       => $gtmd_aht,      // per-day average (display)
-                'gtcs'                      => (int)$row['gtcs'],
-                'gtpy'                      => (int)$row['gtpy'],
-                'gtet'                      => (int)$row['gtet'],
-                'gtdc'                      => (int)$row['gtdc'],
-                'gtrf'                      => (int)$row['gtrf'],
-                'gtib'                      => (int)$row['gtib'],
-                'gtmd'                      => (int)$row['gtmd'],
-                'acw'                       => $acw,      // per-day average (display)
-                'total_acw'                 => $sum_acw,  // raw total seconds for weighted avg
-                'total_campaign'            => $total_campaign
+        $key = $date;
+        if (!isset($byDate[$key])) {
+            $byDate[$key] = [
+                'date' => $date,
+                'inb_call_count' => 0,
+                'inb_call_count_duration' => 0,
+                'sales_aht' => 0,
+                'gtmd_aht_raw' => 0,
+                'gtcs' => 0,
+                'gtpy' => 0,
+                'gtet' => 0,
+                'gtdc' => 0,
+                'gtrf' => 0,
+                'gtib' => 0,
+                'gtmd' => 0,
+                'total_acw_raw' => 0,
             ];
         }
+
+        // Normalize fields from API (fallbacks for naming)
+        // API returns: inbound_calls, inbound_calls_aht, outbound_calls, outbound_calls_aht, etc.
+        $inb_calls = (int)($row['inb_call_count'] ?? $row['inbound_calls'] ?? 0);
+        $inb_aht = (float)($row['inbound_calls_aht'] ?? $row['inb_call_count_aht'] ?? 0);
+        
+        $byDate[$key]['inb_call_count'] += $inb_calls;
+        
+        // Calculate duration from AHT: duration = AHT * count
+        // If API provides duration directly, use it; otherwise calculate from AHT
+        if (isset($row['inb_call_count_duration']) || isset($row['inbound_duration'])) {
+            $byDate[$key]['inb_call_count_duration'] += (int)($row['inb_call_count_duration'] ?? $row['inbound_duration'] ?? 0);
+        } else {
+            // Calculate from AHT: AHT is average, so total duration = AHT * count
+            $byDate[$key]['inb_call_count_duration'] += (int)round($inb_aht * $inb_calls);
+        }
+        
+        // GT call types, Sales AHT, GTMD AHT, and Total ACW - Get from API response
+        $byDate[$key]['gtcs'] += (int)($row['gtcs'] ?? 0);
+        $byDate[$key]['gtpy'] += (int)($row['gtpy'] ?? 0);
+        $byDate[$key]['gtet'] += (int)($row['gtet'] ?? 0);
+        $byDate[$key]['gtdc'] += (int)($row['gtdc'] ?? 0);
+        $byDate[$key]['gtrf'] += (int)($row['gtrf'] ?? 0);
+        $byDate[$key]['gtib'] += (int)($row['gtib'] ?? 0);
+        $byDate[$key]['gtmd'] += (int)($row['gtmd'] ?? 0);
+        
+        // Sales AHT (GTIB duration) and GTMD AHT from API
+        $byDate[$key]['sales_aht'] += (int)($row['sales_aht'] ?? 0);
+        $byDate[$key]['gtmd_aht_raw'] += (int)($row['gtmd_aht'] ?? 0);
+        
+        // Total ACW from API (already in seconds)
+        $byDate[$key]['total_acw_raw'] += (int)($row['total_acw_seconds'] ?? 0);
     }
+
+    $data = [];
+    foreach ($byDate as $dayRow) {
+        $inb_calls = (int)$dayRow['inb_call_count'];
+        $gtib_calls = (int)$dayRow['gtib'];
+        $gtmd_calls = (int)$dayRow['gtmd'];
+        $sum_dur   = (int)$dayRow['inb_call_count_duration']; // seconds
+        $sum_dur_sales   = (int)$dayRow['sales_aht']; // seconds
+        $sum_dur_sales_gtmd   = (int)$dayRow['gtmd_aht_raw']; // seconds
+        $sum_acw   = (int)$dayRow['total_acw_raw'];       // seconds
+
+        $total_campaign = (int)$dayRow['gtcs'] + (int)$dayRow['gtpy'] + (int)$dayRow['gtet'] + (int)$dayRow['gtdc'] + (int)$dayRow['gtrf']+ (int)$dayRow['gtib']+ (int)$dayRow['gtmd'];
+        $aht = ($inb_calls > 0) ? round($sum_dur / $inb_calls) : 0; // seconds per call
+        $gtib_aht = ($gtib_calls > 0) ? round($sum_dur_sales / $gtib_calls) : 0; // seconds per call
+        $gtmd_aht = ($gtmd_calls > 0) ? round($sum_dur_sales_gtmd / $gtmd_calls) : 0; // seconds per call
+        $acw = ($inb_calls > 0) ? round($sum_acw / $inb_calls) : 0; // seconds per call
+
+        $data[] = [
+            'date'                      => $dayRow['date'],
+            'inb_call_count'            => $inb_calls,
+            'inb_call_count_duration'   => $sum_dur,  // raw total seconds for weighted avg
+            'sales_aht'                 => $sum_dur_sales,  // raw total seconds for weighted avg
+            'gtmd_aht'                  => $sum_dur_sales_gtmd,  // raw total seconds for weighted avg
+            'aht'                       => $aht,      // per-day average (display)
+            'gtib_aht'                  => $gtib_aht,      // per-day average (display)
+            'gtmd_aht_percall'          => $gtmd_aht,      // per-day average (display)
+            'gtcs'                      => (int)$dayRow['gtcs'],
+            'gtpy'                      => (int)$dayRow['gtpy'],
+            'gtet'                      => (int)$dayRow['gtet'],
+            'gtdc'                      => (int)$dayRow['gtdc'],
+            'gtrf'                      => (int)$dayRow['gtrf'],
+            'gtib'                      => (int)$dayRow['gtib'],
+            'gtmd'                      => (int)$dayRow['gtmd'],
+            'acw'                       => $acw,      // per-day average (display)
+            'total_acw'                 => $sum_acw,  // raw total seconds for weighted avg
+            'total_campaign'            => $total_campaign
+        ];
+    }
+
+    // Sort by date ascending
+    usort($data, function ($a, $b) {
+        return strcmp($a['date'], $b['date']);
+    });
+
     return $data;
 }
 
 // Fetch data for each day range including agent filter
-$data_1_10   = fetchDataByDate($mysqli, $startDate, $endDate, 1, 10,  $selected_agent);
-$data_11_20  = fetchDataByDate($mysqli, $startDate, $endDate, 11, 20, $selected_agent);
-$data_21_end = fetchDataByDate($mysqli, $startDate, $endDate, 21, 31, $selected_agent);
-$data_total  = fetchDataByDate($mysqli, $startDate, $endDate, null, null, $selected_agent);
+$data_1_10   = fetchDataByDate($apiBase, $startDate, $endDate, 1, 10,  $selected_agent);
+$data_11_20  = fetchDataByDate($apiBase, $startDate, $endDate, 11, 20, $selected_agent);
+$data_21_end = fetchDataByDate($apiBase, $startDate, $endDate, 21, 31, $selected_agent);
+$data_total  = fetchDataByDate($apiBase, $startDate, $endDate, null, null, $selected_agent);
 
 /** AJAX: agent data for a specific date with agent filter
  *  NOTE: parse total_acw to seconds here too, and return averages per agent.
  */
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'agent_data' && isset($_GET['date'])) {
-    $date = $mysqli->real_escape_string($_GET['date']);
+    $date = $_GET['date'];
     $ajax_agent = $_GET['agent_name'] ?? '';
 
-    $agentFilterSql = '';
-    if (!empty($ajax_agent)) {
-        $agentEscaped = $mysqli->real_escape_string($ajax_agent);
-        $agentFilterSql = "AND agent_name = '$agentEscaped'";
-    }
+    try {
+        $queryParams = [
+            'start_date' => $date,
+            'end_date'   => $date,
+            'location'   => 'BOM',
+            'status'     => 'active',
+            'limit'      => 1000,
+            'offset'     => 0,
+        ];
+        if (!empty($ajax_agent)) {
+            $queryParams['agent_name'] = $ajax_agent;
+        }
 
-    $agentQuery = "
-        SELECT 
-            agent_name,
-            SUM(inb_call_count)                                  AS inb_call_count,
-            SUM(sales_aht)                                  AS sales_aht,
-            SUM(gtmd_aht)                                  AS gtmd_aht,
-            SUM(inb_call_count_duration)                         AS inb_call_count_duration,
-            SUM(gtcs)                                            AS gtcs,
-            SUM(gtpy)                                            AS gtpy,
-            SUM(gtet)                                            AS gtet,
-            SUM(gtdc)                                            AS gtdc,
-            SUM(gtrf)                                            AS gtrf,
-            SUM(gtib)                                            AS gtib,
-            SUM(gtmd)                                            AS gtmd,
-            SUM(CAST(SUBSTRING_INDEX(total_acw, ' ', 1) AS UNSIGNED)) AS total_acw_seconds
-        FROM wpk4_agent_after_sale_productivity_report
-        WHERE `date` = '$date' $agentFilterSql
-        GROUP BY agent_name
-        HAVING SUM(inb_call_count) > 0
-        ORDER BY agent_name ASC
-    ";
-    $res = $mysqli->query($agentQuery);
-    $agentsData = [];
-    if ($res) {
-        while ($row = $res->fetch_assoc()) {
-            $inb_calls = (int)$row['inb_call_count'];
-            $gtib_calls = (int)$row['gtib'];
-            $inb_calls = (int)$row['gtmd'];
-            $gtmd_calls   = (int)$row['inb_call_count_duration'];
-            $sum_dur_sales   = (int)$row['sales_aht'];
-            $sum_dur_sales_gtmd   = (int)$row['gtmd_aht'];
-            $sum_acw   = (int)$row['total_acw_seconds'];
+        // Use the by-agent endpoint for AJAX requests to get agent-level data - API now returns all required fields
+        $resp = api_get_json($apiBase . '/after-sale-productivity-report-by-agent', $queryParams);
+        $rows = $resp['data'] ?? $resp['records'] ?? $resp['report'] ?? [];
+
+        $byAgent = [];
+        foreach ($rows as $row) {
+            // API returns data already grouped by agent_name
+            $agentName = $row['agent_name'] ?? $row['agent'] ?? 'Unknown';
+            if (!isset($byAgent[$agentName])) {
+                $byAgent[$agentName] = [
+                    'agent_name' => $agentName,
+                    'inb_call_count' => 0,
+                    'inb_call_count_duration' => 0,
+                    'sales_aht' => 0,
+                    'gtmd_aht_raw' => 0,
+                    'gtcs' => 0,
+                    'gtpy' => 0,
+                    'gtet' => 0,
+                    'gtdc' => 0,
+                    'gtrf' => 0,
+                    'gtib' => 0,
+                    'gtmd' => 0,
+                    'total_acw_raw' => 0,
+                ];
+            }
+
+        // API returns: inbound_calls, inbound_calls_aht, etc.
+        $agent_inb_calls = (int)($row['inb_call_count'] ?? $row['inbound_calls'] ?? 0);
+        $agent_inb_aht = (float)($row['inbound_calls_aht'] ?? $row['inb_call_count_aht'] ?? 0);
+        
+        $byAgent[$agentName]['inb_call_count'] += $agent_inb_calls;
+        
+        // Calculate duration from AHT if not provided directly
+        if (isset($row['inb_call_count_duration']) || isset($row['inbound_duration'])) {
+            $byAgent[$agentName]['inb_call_count_duration'] += (int)($row['inb_call_count_duration'] ?? $row['inbound_duration'] ?? 0);
+        } else {
+            // Calculate from AHT: duration = AHT * count
+            $byAgent[$agentName]['inb_call_count_duration'] += (int)round($agent_inb_aht * $agent_inb_calls);
+        }
+        
+        // GT call types, Sales AHT, GTMD AHT, and Total ACW - Get from API response
+        $byAgent[$agentName]['gtcs'] += (int)($row['gtcs'] ?? 0);
+        $byAgent[$agentName]['gtpy'] += (int)($row['gtpy'] ?? 0);
+        $byAgent[$agentName]['gtet'] += (int)($row['gtet'] ?? 0);
+        $byAgent[$agentName]['gtdc'] += (int)($row['gtdc'] ?? 0);
+        $byAgent[$agentName]['gtrf'] += (int)($row['gtrf'] ?? 0);
+        $byAgent[$agentName]['gtib'] += (int)($row['gtib'] ?? 0);
+        $byAgent[$agentName]['gtmd'] += (int)($row['gtmd'] ?? 0);
+        
+        // Sales AHT (GTIB duration) and GTMD AHT from API
+        $byAgent[$agentName]['sales_aht'] += (int)($row['sales_aht'] ?? 0);
+        $byAgent[$agentName]['gtmd_aht_raw'] += (int)($row['gtmd_aht'] ?? 0);
+        
+        // Total ACW from API (already in seconds)
+        $byAgent[$agentName]['total_acw_raw'] += (int)($row['total_acw_seconds'] ?? 0);
+        }
+
+        $agentsData = [];
+        foreach ($byAgent as $agentRow) {
+            $inb_calls = (int)$agentRow['inb_call_count'];
+            $gtib_calls = (int)$agentRow['gtib'];
+            $gtmd_calls = (int)$agentRow['gtmd'];
+            $sum_dur   = (int)$agentRow['inb_call_count_duration'];
+            $sum_dur_sales   = (int)$agentRow['sales_aht'];
+            $sum_dur_sales_gtmd   = (int)$agentRow['gtmd_aht_raw'];
+            $sum_acw   = (int)$agentRow['total_acw_raw'];
+
             $aht = ($inb_calls > 0) ? round($sum_dur / $inb_calls) : 0;
-             $gtib_aht = ($gtib_calls > 0) ? round($sum_dur_sales / $gtib_calls) : 0;
-            $gtmd_aht = ($gtmd_calls > 0) ? round($sum_dur_sales_gtmd / $gtmd_calls) : 0; 
+            $gtib_aht = ($gtib_calls > 0) ? round($sum_dur_sales / $gtib_calls) : 0;
+            $gtmd_aht = ($gtmd_calls > 0) ? round($sum_dur_sales_gtmd / $gtmd_calls) : 0;
             $acw = ($inb_calls > 0) ? round($sum_acw / $inb_calls) : 0;
 
             $agentsData[] = [
-                'agent_name'                 => $row['agent_name'],
-                'inb_call_count'             => $inb_calls,
-                'inb_call_count_duration'    => $sum_dur,
-                'sales_aht'                 => $sum_dur_sales,
-                'gtmd_duration'                 => $sum_dur_sales_gtmd,
-                'aht'                        => $aht,
-                'gtib_aht'                        => $gtib_aht,
-                'gtmd_aht'                        => $gtmd_aht,
-                'gtcs'                       => (int)$row['gtcs'],
-                'gtpy'                       => (int)$row['gtpy'],
-                'gtet'                       => (int)$row['gtet'],
-                'gtdc'                       => (int)$row['gtdc'],
-                'gtrf'                       => (int)$row['gtrf'],
-                'gtib'                       => (int)$row['gtib'],
-                'gtmd'                       => (int)$row['gtmd'],
-                'acw'                        => $acw,
-                'total_campaign'             => (int)$row['gtcs'] + (int)$row['gtpy'] + (int)$row['gtet'] + (int)$row['gtdc'] + (int)$row['gtrf']+ (int)$row['gtib']+ (int)$row['gtmd']
+                'agent_name'              => $agentRow['agent_name'],
+                'inb_call_count'          => $inb_calls,
+                'inb_call_count_duration' => $sum_dur,
+                'sales_aht'               => $sum_dur_sales,
+                'gtmd_duration'           => $sum_dur_sales_gtmd,
+                'aht'                     => $aht,
+                'aht_gtib'                => $gtib_aht,
+                'aht_gtmd'                => $gtmd_aht,
+                'gtcs'                    => (int)$agentRow['gtcs'],
+                'gtpy'                    => (int)$agentRow['gtpy'],
+                'gtet'                    => (int)$agentRow['gtet'],
+                'gtdc'                    => (int)$agentRow['gtdc'],
+                'gtrf'                    => (int)$agentRow['gtrf'],
+                'gtib'                    => (int)$agentRow['gtib'],
+                'gtmd'                    => (int)$agentRow['gtmd'],
+                'acw'                     => $acw,
+                'total_campaign'          => (int)$agentRow['gtcs'] + (int)$agentRow['gtpy'] + (int)$agentRow['gtet'] + (int)$agentRow['gtdc'] + (int)$agentRow['gtrf'] + (int)$agentRow['gtib'] + (int)$agentRow['gtmd'],
             ];
         }
+
+    } catch (Exception $e) {
+        $agentsData = [];
     }
+
     header('Content-Type: application/json');
     echo json_encode($agentsData);
     exit;
@@ -247,7 +379,7 @@ function renderTableByDate($data, $title) {
         foreach ($data as $row) {
             $aht_seconds = (int)$row['aht']; // per-day average
             $gtib_aht_seconds = (int)$row['gtib_aht']; // per-day average
-            $gtmd_aht_seconds = (int)$row['gtmd_aht']; // per-day average
+            $gtmd_aht_seconds = (int)$row['gtmd_aht_percall']; // per-day average
             $acw_seconds = (int)$row['acw']; // per-day average
 
             $inb_call_count          = (int)$row['inb_call_count'];
@@ -256,7 +388,7 @@ function renderTableByDate($data, $title) {
             $total_acw_value_seconds = (int)$row['total_acw'];                // raw total seconds
             $inb_call_dur_seconds    = (int)$row['inb_call_count_duration'];  // raw total seconds
             $inb_call_dur_seconds_sales    = (int)$row['sales_aht'];  // raw total seconds
-            $inb_call_dur_seconds_sales_gtmd    = (int)$row['gtmd_aht'];  // raw total seconds
+            $inb_call_dur_seconds_sales_gtmd    = (int)$row['gtmd_aht'];  // raw total seconds (stored as gtmd_aht in data array)
 
             // Accumulate counts & splits
             $sum_gtcs        += (int)$row['gtcs'];

@@ -3,103 +3,147 @@
  * Template Name: My Incentive
  * Template Post Type: post, page
  */
-$host = 'localhost';
-$db = 'gaurat_gauratravel';
-$user = 'gaurat_sriharan';
-$pass = 'r)?2lc^Q0cAE';
-
-$apiUrl = 'https://gauratravel.com.au/wp-content/themes/twentytwenty/templates/tpl_admin_backend_for_credential_pass_main.php';
-$ch = curl_init($apiUrl);
-curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_FOLLOWLOCATION => true,
-    CURLOPT_TIMEOUT        => 10,
-    CURLOPT_CONNECTTIMEOUT => 5,
-    CURLOPT_HTTPHEADER     => ['Accept: application/json'],
-    CURLOPT_USERAGENT      => 'GTX-SettingsFetcher/1.0',
-    CURLOPT_SSL_VERIFYPEER => true,   // keep true in prod
-    CURLOPT_SSL_VERIFYHOST => 2,      // keep strict
-]);
-$body = curl_exec($ch);
-$http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$err  = curl_error($ch);
-curl_close($ch);
-
-if ($body === false) {
-    die("Failed to load settings: $err");
-}
-if ($http !== 200) {
-    // Show a snippet of body for debugging
-    die("Settings endpoint HTTP $http.\n".substr($body, 0, 500));
+if (!defined('API_BASE_URL')) {
+    throw new RuntimeException('API_BASE_URL is not defined');
 }
 
-$resp = json_decode($body, true);
-if (json_last_error() !== JSON_ERROR_NONE) {
-    die("Invalid JSON: ".json_last_error_msg()."\n".substr($body, 0, 500));
-}
-if (!is_array($resp) || empty($resp['success'])) {
-    die("Invalid settings response shape.\n".substr($body, 0, 500));
+wp_get_current_user();
+global $current_user;
+$currnt_userlogn = $current_user->user_login ?? '';
+
+if (!$currnt_userlogn) {
+    wp_die('Please log in to view your incentive data.');
 }
 
-$settings = $resp['data'] ?? [];
-foreach ($settings as $k => $v) {
-    if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $k)) {
-        $GLOBALS[$k] = $v;
+function agent_incentive_api_request(string $endpoint, array $query = []): array
+{
+    $url = rtrim(API_BASE_URL, '/') . '/' . ltrim($endpoint, '/');
+    $filtered = [];
+    foreach ($query as $key => $value) {
+        if ($value === null || $value === '') {
+            continue;
+        }
+        $filtered[$key] = $value;
+    }
+    if (!empty($filtered)) {
+        $url .= '?' . http_build_query($filtered, '', '&', PHP_QUERY_RFC3986);
+    }
+
+    $response = wp_remote_get($url, [
+        'timeout' => 30,
+        'headers' => ['Accept' => 'application/json'],
+    ]);
+
+    if (is_wp_error($response)) {
+        throw new RuntimeException($response->get_error_message());
+    }
+
+    $body = wp_remote_retrieve_body($response);
+    $decoded = json_decode($body, true);
+
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new RuntimeException('Invalid API response: ' . json_last_error_msg());
+    }
+
+    if (($decoded['status'] ?? '') !== 'success') {
+        $message = $decoded['message'] ?? 'Unknown API error';
+        throw new RuntimeException($message);
+    }
+
+    return $decoded['data'] ?? [];
+}
+
+try {
+    $agentInfoResponse = agent_incentive_api_request('employee-schedule/agent-by-user', [
+        'wordpress_user_name' => $currnt_userlogn,
+    ]);
+    $agentRecord = $agentInfoResponse['agent'] ?? [];
+} catch (Throwable $e) {
+    wp_die('No matching agent record found for user: ' . esc_html($currnt_userlogn));
+}
+
+$selected_agent_name = $agentRecord['agent_name'] ?? '';
+$rosterCode = $agentRecord['roster_code'] ?? '';
+
+if (!$selected_agent_name) {
+    wp_die('No matching agent record found for user: ' . esc_html($currnt_userlogn));
+}
+
+$requestedPeriod = isset($_GET['period']) ? sanitize_text_field($_GET['period']) : '';
+$target = isset($_GET['target']) ? (int)$_GET['target'] : 10000;
+$eligibleOnly = isset($_GET['eligible']) ? filter_var($_GET['eligible'], FILTER_VALIDATE_BOOLEAN) : false;
+
+try {
+    $frontendData = agent_incentive_api_request('agent-incentive/frontend-data', [
+        'period' => $requestedPeriod,
+        'agent' => $selected_agent_name,
+        'eligible' => $eligibleOnly ? '1' : '0',
+    ]);
+} catch (Throwable $e) {
+    error_log('Agent incentive frontend data error: ' . $e->getMessage());
+    wp_die('Failed to load incentive data. Please contact administrator. Error logged for debugging.');
+}
+
+$allPeriods = $frontendData['periods'] ?? [];
+$latestPeriod = $frontendData['latest_period'] ?? ($allPeriods[0] ?? '');
+$period = $frontendData['selected_period'] ?? ($frontendData['period'] ?? ($requestedPeriod ?: $latestPeriod));
+
+if (!$period) {
+    wp_die('No incentive period available.');
+}
+
+$_GET['period'] = $period;
+$_GET['agent'] = $selected_agent_name;
+
+$periodIndex = array_search($period, $allPeriods, true);
+if ($periodIndex === false) {
+    $periodIndex = 0;
+}
+$periods = array_slice($allPeriods, $periodIndex, 10);
+
+$agentName = $selected_agent_name;
+$agentList = $frontendData['agents'] ?? [];
+$performanceRows = $frontendData['performance'] ?? [];
+$dailyBreakdown = array_values($frontendData['daily'] ?? []);
+$dailyRaw = $dailyBreakdown;
+$eligibilityCriteria = $frontendData['criteria'] ?? [];
+
+if (empty($performanceRows)) {
+    wp_die('No incentive performance data available for this period.');
+}
+
+$agentData = null;
+foreach ($performanceRows as $row) {
+    if (($row['agent_name'] ?? '') === $agentName) {
+        $agentData = $row;
+        break;
     }
 }
 
-$pdo = new PDO("mysql:host=$host;dbname=$db", $user, $pass);
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-
-// Get current logged-in user
-wp_get_current_user();
-global $current_user;
-$current_userlogin = $current_user->user_login;  // WordPress username
-
-// Fetch the logged-in user's agent name from wpk4_backend_agent_codes table
-$stmt = $pdo->prepare("SELECT agent_name FROM wpk4_backend_agent_codes WHERE wordpress_user_name = ? AND status = 'active' LIMIT 1");
-$stmt->execute([$current_userlogin]);
-$selected_agent = $stmt->fetch();
-
-if (!$selected_agent) {
-    die("No matching agent record found for user: " . htmlspecialchars($current_userlogin));
+if (!$agentData) {
+    wp_die('No incentive record found for agent: ' . esc_html($agentName));
 }
 
-
-// Get the agent name of the logged-in user
-$selected_agent_name = $selected_agent['agent_name'];
-
-$allPeriods = $pdo->query("SELECT DISTINCT period FROM wpk4_backend_incentive_criteria ORDER BY period DESC")->fetchAll(PDO::FETCH_COLUMN);
-$latestPeriod = $allPeriods[0] ?? '';
-
-$period = $_GET['period'] ?? $latestPeriod;
-$agentName = $selected_agent_name;
-$target = isset($_GET['target']) ? (int)$_GET['target'] : 10000;
-
-
-
-// Show current + 3 most recent
-$periodIndex = array_search($period, $allPeriods);
-$periodIndex = $periodIndex !== false ? $periodIndex : 0;
-
-$periods = array_slice($allPeriods, $periodIndex, 10);
-
-
-$_GET['period'] = $period;
-$_GET['agent'] = $agentName;
-
-$data = include 'G360_Dashboard/agent-incentive/get-frontend-incentive-data.php';
-
-include 'G360_Dashboard/agent-incentive/incentive_criteria.php';
-
-$agentList = $data['agents'];
-$agentData = null;
-foreach ($data['performance'] as $row) {
-  if ($row['agent_name'] === $agentName) {
-    $agentData = $row;
-    break;
-  }
+try {
+    $criteriaData = agent_incentive_api_request('agent-incentive/criteria', ['period' => $period]);
+} catch (Throwable $e) {
+    error_log('Agent incentive criteria error: ' . $e->getMessage());
+    $criteriaData = [];
 }
+
+$slabs = $criteriaData['slabs'] ?? [];
+$fcs_multipliers = $criteriaData['fcs_multipliers'] ?? [];
+$daily_fcs_multipliers = $criteriaData['daily_fcs_multipliers'] ?? [];
+$daily_bonus = $criteriaData['daily_bonus'] ?? [];
+$eligibility = $criteriaData['eligibility'] ?? $eligibilityCriteria;
+$daily_incentives = [];
+foreach ($criteriaData['daily_incentives'] ?? [] as $block) {
+    if (!isset($block['min_gtib'])) {
+        continue;
+    }
+    $daily_incentives[$block['min_gtib']] = $block;
+}
+ksort($daily_incentives);
 
 $summary = [
   'pif' => $agentData['pif'] ?? 0,
@@ -112,6 +156,7 @@ $summary = [
   'gtbk' => $agentData['gtbk'] ?? 0,
   'earned' => 0
 ];
+$agentRow = $agentData;
 
 $loginRequiredHrs = isset($eligibility['noble_login_min_hrs']) ? (float)$eligibility['noble_login_min_hrs'] : 3;
 $gtbkLimitHrs     = isset($eligibility['gtbk_max_hrs']) ? (float)$eligibility['gtbk_max_hrs'] : 2;
@@ -210,7 +255,7 @@ if ($today > $endDate) {
   $summary['earned'] = $summary['projected'];
 }
 
-$dailyRaw = $data['daily'] ?? [];
+$dailyRaw = $dailyBreakdown;
 $dailyEarned = 0;
 $dailyData = [];
 $dateMap = [];
@@ -246,6 +291,9 @@ while ($dailyStart <= $dailyEnd) {
     $dailyFcsMultiplier = 1;
     
     foreach ($daily_incentives as $block) {
+        if (empty($block['criteria']) || !is_array($block['criteria'])) {
+            continue;
+        }
         if ($gtib >= $block['min_gtib']) {
             foreach ($block['criteria'] as $crit) {
                 if ($conversion >= ($crit['conversion']) && $pax >= $crit['pax']) {
@@ -355,56 +403,35 @@ if ($summary['conversion'] >= 0.40) {
     }
 }
 
-// First, let's get the roster_code for the selected agent
-$rosterCode = '';
-if ($agentName) {
-    $stmt = $pdo->prepare("SELECT roster_code FROM wpk4_backend_agent_codes 
-                          WHERE agent_name = :agent_name AND status = 'active' LIMIT 1");
-    $stmt->execute([':agent_name' => $agentName]);
-    $agentCode = $stmt->fetch(PDO::FETCH_ASSOC);
-    $rosterCode = $agentCode['roster_code'] ?? '';
-}
-
-// Debug output
-echo "<!-- Debug: agent_name = '$agentName', roster_code = '$rosterCode', period = '$period' -->";
-
-// Get the agent's target pathway data
+// Get the agent's target pathway data via API
 $targetPathway = [];
 $isFallbackTarget = false;
 
 if ($rosterCode) {
     try {
-        // Try exact match for period
-        $stmt = $pdo->prepare("SELECT * FROM wpk4_backend_agent_target_pathway 
-                              WHERE roster_code = :roster_code AND period = :period
-                              LIMIT 1");
-        $stmt->execute([':roster_code' => $rosterCode, ':period' => $period]);
-        $targetPathway = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$targetPathway) {
-            $isFallbackTarget = true;
-            echo "<!-- Debug: No exact match found, showing most recent target for roster code -->";
-
-            // Fallback: get latest entry for roster code
-            $stmt = $pdo->prepare("SELECT * FROM wpk4_backend_agent_target_pathway 
-                                  WHERE roster_code = :roster_code
-                                  ORDER BY created_at DESC
-                                  LIMIT 1");
-            $stmt->execute([':roster_code' => $rosterCode]);
-            $targetPathway = $stmt->fetch(PDO::FETCH_ASSOC);
+        $targetPathway = agent_incentive_api_request('agent-incentive/target-pathway', [
+            'roster_code' => $rosterCode,
+            'period' => $period,
+        ]);
+    } catch (Throwable $e) {
+        $isFallbackTarget = true;
+        error_log('Agent target pathway not found for period, attempting fallback: ' . $e->getMessage());
+        try {
+            $pathwayResponse = agent_incentive_api_request('agent-incentive/target-pathways', [
+                'roster_code' => $rosterCode,
+            ]);
+            $pathwayList = $pathwayResponse['pathways'] ?? [];
+            if (!empty($pathwayList)) {
+                $targetPathway = $pathwayList[0];
+            }
+        } catch (Throwable $fallbackError) {
+            error_log('Agent target pathway fallback error: ' . $fallbackError->getMessage());
         }
-    } catch (PDOException $e) {
-        echo "<!-- Database error: " . htmlspecialchars($e->getMessage()) . " -->";
     }
 }
 
-
-// Debug output of what we found
-echo "<!-- Debug: targetPathway = " . print_r($targetPathway, true) . " -->";
-// Check if $targetPathway is an array before accessing its key
 $targetPathway = is_array($targetPathway) ? $targetPathway : [];
 $targetPathway['total_estimate'] = $targetPathway['total_estimate'] ?? 0; // Default to 0 if no target found
-
 
 function statusIcon($condition) {
     if ($condition === null) return '-';
@@ -808,19 +835,15 @@ function ist_raw_to_aus_time(int $rawHmsInt, string $dateYmd): string {
       📘 GARLAND: ≥ <?= $requiredQA ?>%
     </div>    
     <?php
-    $period = $_GET['period'] ?? ''; // Example: '2025-06-11_to_2025-06-20'
-    
     $today = new DateTime();
-    
+    $periodForDisplay = $period;
     $endDateString = '';
-    if (strpos($period, '_to_') !== false) {
-        list($start, $end) = explode('_to_', $period);
+    if (strpos($periodForDisplay, '_to_') !== false) {
+        list($start, $end) = explode('_to_', $periodForDisplay);
         $endDateString = $end;
     } else {
-        // fallback if period is not in expected format
         $endDateString = date('Y-m-d');
     }
-    
     $endDate = new DateTime($endDateString);
     $daysLeft = ($today > $endDate) ? 0 : $today->diff($endDate)->days + 1;
     $encouragements = [
@@ -1094,6 +1117,7 @@ function ist_raw_to_aus_time(int $rawHmsInt, string $dateYmd): string {
         </div>
 
         <?php foreach ($daily_incentives as $min_gtib => $daily_incentive): ?>
+          <?php if (empty($daily_incentive['criteria']) || !is_array($daily_incentive['criteria'])) { continue; } ?>
           <?php
             // Group all criteria under same GTIB + conversion % (assumes they share same conversion per group)
             $pax_rewards = [];

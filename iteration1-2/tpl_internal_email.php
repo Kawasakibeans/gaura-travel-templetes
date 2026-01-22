@@ -17,45 +17,83 @@ include("wp-config-custom.php");
 $current_time = date('Y-m-d H:i:s');
 
 global $current_user;
-$currnt_userlogn = $current_user->user_login;
+$currnt_userlogn = isset($current_user->user_login) ? $current_user->user_login : '';
 
-$query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='$ip_address'";
-$result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
-$row_ip_selection = mysqli_fetch_assoc($result_ip_selection);
-$is_ip_matched = mysqli_num_rows($result_ip_selection);
-if(mysqli_num_rows($result_ip_selection) > 0 && isset($currnt_userlogn) && $currnt_userlogn != '')
+// Get IP address if not already defined
+if (!isset($ip_address)) {
+    $ip_address = $_SERVER['REMOTE_ADDR'] ?? '';
+}
+
+// Check IP and user login
+$is_ip_matched = 0;
+if (isset($mysqli) && $ip_address && $currnt_userlogn) {
+    $query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='" . mysqli_real_escape_string($mysqli, $ip_address) . "'";
+    $result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
+    if ($result_ip_selection) {
+        $row_ip_selection = mysqli_fetch_assoc($result_ip_selection);
+        $is_ip_matched = mysqli_num_rows($result_ip_selection);
+    }
+}
+
+if($is_ip_matched > 0 && isset($currnt_userlogn) && $currnt_userlogn != '')
 {
     
 $current_user_id = get_current_user_id();
-global $wpdb;
-// get emails sent to the current user.
-$emails = $wpdb->get_results(" 
-    SELECT * FROM wpk4_internal_emails
-    WHERE parent_email_id IS NULL
-    AND (
-        receiver_id = $current_user_id
-        OR (
-            sender_id = $current_user_id
-            AND EXISTS (
-                SELECT 1 FROM wpk4_internal_emails AS replies
-                WHERE replies.parent_email_id = wpk4_internal_emails.id
-            )
-        )
-    ) AND is_draft = 0
-    ORDER BY created_at DESC");
-$sent_emails = $wpdb->get_results(" 
-    SELECT * FROM wpk4_internal_emails
-    WHERE parent_email_id IS NULL
-    AND (
-        sender_id = $current_user_id
-    ) AND is_draft = 0
-    ORDER BY created_at DESC");
-$draft_emails = $wpdb->get_results("
-    SELECT * FROM wpk4_internal_emails 
-    WHERE sender_id = $current_user_id AND is_draft = '1' 
-    ORDER BY created_at DESC
-");
-// echo print_r($emails);   
+
+// Load WordPress to access constants
+if (file_exists($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php')) {
+    require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+}
+
+// Use API_BASE_URL constant if defined, otherwise use default
+if (defined('API_BASE_URL')) {
+    /** @var string $api_url */
+    $api_url = constant('API_BASE_URL');
+} else {
+    $api_url = 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1';
+}
+
+/**
+ * Helper function to get emails via API
+ */
+function getEmailsViaAPI($api_url, $endpoint, $user_id) {
+    $ch = curl_init($api_url . $endpoint . '?user_id=' . $user_id);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode === 200) {
+        $data = json_decode($response, true);
+        if (isset($data['data'])) {
+            return $data['data'];
+        }
+    }
+    return [];
+}
+
+// Get emails via API
+$emails = getEmailsViaAPI($api_url, '/internal-emails/inbox', $current_user_id);
+$sent_emails = getEmailsViaAPI($api_url, '/internal-emails/sent', $current_user_id);
+$draft_emails = getEmailsViaAPI($api_url, '/internal-emails/draft', $current_user_id);
+
+// Convert to objects for compatibility with existing code
+$emails = array_map(function($email) {
+    return (object)$email;
+}, $emails);
+$sent_emails = array_map(function($email) {
+    return (object)$email;
+}, $sent_emails);
+$draft_emails = array_map(function($email) {
+    return (object)$email;
+}, $draft_emails);
+// echo print_r($emails); 
+//echo "<script>console.log(" . json_encode($emails) . ");</script>";
+//William debugging 12/12/2025 - $emails is empty, getEmailsViaAPI is returning empty array
 ?>
 
     <button class='email-button' id="inbox-button">📥 Inbox</button>
@@ -79,12 +117,12 @@ $draft_emails = $wpdb->get_results("
                 </thead>
                 <tbody>
                         <?php foreach ($emails as $email) : ?>
-                                <tr data-id="<?php echo $email->id ?>" class="<?php if($email->is_read == 1) { echo 'read'; } else { echo 'unread'; } ?> row2" onclick="openEmail(<?php echo $email->id ?>)">
-                                        <td><?php echo get_userdata($email->sender_id)->display_name ?></td>
-                                        <td><?php echo get_userdata($email->receiver_id)->display_name ?></td>
+                                <tr data-id="<?php echo $email->id ?>" class="<?php if(isset($email->is_read) && $email->is_read == 1) { echo 'read'; } else { echo 'unread'; } ?> row2" onclick="openEmail(<?php echo $email->id ?>)">
+                                        <td><?php echo isset($email->sender_name) ? esc_html($email->sender_name) : 'Unknown' ?></td>
+                                        <td><?php echo isset($email->receiver_name) ? esc_html($email->receiver_name) : 'Unknown' ?></td>
                                         
                                         <td><?php echo esc_html($email->subject) ?></td>
-                                        <td><?php echo date('d M Y, H:i', strtotime($email->created_at)) ?></td>
+                                        <td><?php echo isset($email->formatted_date) ? esc_html($email->formatted_date) : (isset($email->created_at) ? date('d M Y, H:i', strtotime($email->created_at)) : '') ?></td>
                                 </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
@@ -123,11 +161,11 @@ $draft_emails = $wpdb->get_results("
                 <tbody>
                         <?php foreach ($sent_emails as $email) : ?>
                                 <tr data-id = "<?= $email->id ?>" class="read row2" onclick="openSentEmail(<?= $email->id ?>)">
-                                        <td><?= get_userdata($email->sender_id)->display_name ?></td>
-                                        <td><?= get_userdata($email->receiver_id)->display_name ?></td>
+                                        <td><?= isset($email->sender_name) ? esc_html($email->sender_name) : 'Unknown' ?></td>
+                                        <td><?= isset($email->receiver_name) ? esc_html($email->receiver_name) : 'Unknown' ?></td>
                                         
                                         <td><?= esc_html($email->subject) ?></td>
-                                        <td><?= date('d M Y, H:i', strtotime($email->created_at)) ?></td>
+                                        <td><?= isset($email->formatted_date) ? esc_html($email->formatted_date) : (isset($email->created_at) ? date('d M Y, H:i', strtotime($email->created_at)) : '') ?></td>
                                 </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
@@ -162,9 +200,9 @@ $draft_emails = $wpdb->get_results("
                 <tbody>
                   <?php foreach ($draft_emails as $draft) : ?>
                     <tr data-id = "<?= $draft->id ?>" onclick="editDraft(<?= $draft->id ?>)" class='row2'>
-                      <td><?= $draft->receiver_id ? get_userdata($draft->receiver_id)->display_name : '(Not Set)' ?></td>
+                      <td><?= isset($draft->receiver_name) ? esc_html($draft->receiver_name) : '(Not Set)' ?></td>
                       <td><?= esc_html($draft->subject) ?></td>
-                      <td><?= date('d M Y, H:i', strtotime($draft->created_at)) ?></td>
+                      <td><?= isset($draft->formatted_date) ? esc_html($draft->formatted_date) : (isset($draft->created_at) ? date('d M Y, H:i', strtotime($draft->created_at)) : '') ?></td>
                     </tr>
                   <?php endforeach; ?>
                 </tbody>
@@ -212,9 +250,39 @@ $draft_emails = $wpdb->get_results("
             document.getElementById("email-list").style.display = 'none';
             document.getElementById("email-container").style.display = 'block';
             // Fetch email content using AJAX
-            fetch("/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?thread_id=" + emailId)
-            .then(response => response.json())
+            fetch("/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?thread_id=" + emailId, {
+                credentials: 'include' // Include cookies for WordPress authentication
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
             .then(data => {
+                // Check for error response
+                if (data.error) {
+                    console.error("API Error:", data.error, data.message || '');
+                    document.getElementById('email-content-container').innerHTML = `
+                        <div class="error-container">
+                            <p>Error: ${data.error}</p>
+                            ${data.message ? `<p>${data.message}</p>` : ''}
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // Ensure data is an array
+                if (!Array.isArray(data)) {
+                    console.error("Invalid data format:", data);
+                    document.getElementById('email-content-container').innerHTML = `
+                        <div class="error-container">
+                            <p>Invalid response format</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
                 let html = '';
                 data.forEach((thread, index) => {
                     html += `
@@ -237,7 +305,7 @@ $draft_emails = $wpdb->get_results("
                 //  Store for reply
                 localStorage.setItem("lastOpenedEmail", JSON.stringify({
                     emailId: emailId,
-                    sender_email: data[lastIndex].email,
+                    sender_email: data[lastIndex].sender_email || data[lastIndex].email || '',
                     sender_id: data[lastIndex].sender_id,
                     sender_name: data[lastIndex].sender,
                     subject: data[lastIndex].subject,
@@ -269,9 +337,39 @@ $draft_emails = $wpdb->get_results("
             document.getElementById("sent-email-list").style.display = 'none';
             document.getElementById("sent-email-container").style.display = 'block';
             // Fetch email content using AJAX
-            fetch("/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?thread_id=" + emailId)
-            .then(response => response.json())
+            fetch("/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?thread_id=" + emailId, {
+                credentials: 'include' // Include cookies for WordPress authentication
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
             .then(data => {
+                // Check for error response
+                if (data.error) {
+                    console.error("API Error:", data.error, data.message || '');
+                    document.getElementById('sent-email-content-container').innerHTML = `
+                        <div class="error-container">
+                            <p>Error: ${data.error}</p>
+                            ${data.message ? `<p>${data.message}</p>` : ''}
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // Ensure data is an array
+                if (!Array.isArray(data)) {
+                    console.error("Invalid data format:", data);
+                    document.getElementById('sent-email-content-container').innerHTML = `
+                        <div class="error-container">
+                            <p>Invalid response format</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
                 let html = '';
                 data.forEach((thread, index) => {
                     html += `
@@ -292,7 +390,7 @@ $draft_emails = $wpdb->get_results("
                 //  Store for reply
                 localStorage.setItem("lastOpenedEmail", JSON.stringify({
                     emailId: emailId,
-                    sender_email: data[lastIndex].email,
+                    sender_email: data[lastIndex].sender_email || data[lastIndex].email || '',
                     sender_id: data[lastIndex].sender_id,
                     sender_name: data[lastIndex].sender,
                     subject: data[lastIndex].subject,
@@ -394,9 +492,12 @@ $draft_emails = $wpdb->get_results("
             formData.append("subject", subject);
             formData.append("message", message);
             formData.append("is_draft", is_draft);
+            
+            //William Debugging 12/12/2025: draftId is an empty string
             if (draftId) {
                 formData.append("draft_id", draftId);
             }
+        
             
             if (localStorage.getItem("lastOpenedEmail")){
                 const openedEmail = JSON.parse(localStorage.getItem("lastOpenedEmail"));
@@ -408,6 +509,7 @@ $draft_emails = $wpdb->get_results("
         
             fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php`, {
                 method: "POST",
+                credentials: 'include', // Include cookies for WordPress authentication
                 body: formData
             })
             .then(response =>{
@@ -455,7 +557,9 @@ $draft_emails = $wpdb->get_results("
                     return;
                 }
         
-                fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?query=${query}`)
+                fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?query=${query}`, {
+                    credentials: 'include' // Include cookies for WordPress authentication
+                })
                     .then(response => response.json())
                     .then(users => {
                         suggestionsBox.innerHTML = "";
@@ -499,10 +603,18 @@ $draft_emails = $wpdb->get_results("
             
         
         function fetchInboxUpdates() {
-            fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?type=inbox`)
+            fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?type=inbox`, {
+                credentials: 'include' // Include cookies for WordPress authentication
+            })
                 .then(response => response.json())
                 .then(data => {
-                    if (data.length > 0) {
+                    // Check for error response
+                    if (data.error) {
+                        console.error("Error fetching inbox updates:", data.error, data.message || '');
+                        return;
+                    }
+                    // Ensure data is an array
+                    if (Array.isArray(data) && data.length > 0) {
                         updateInboxUI(data);
                     }
                 })
@@ -534,10 +646,18 @@ $draft_emails = $wpdb->get_results("
         
         function fetchSentUpdates() {
             console.log("updating sent emails")
-            fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?type=sent`)
+            fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?type=sent`, {
+                credentials: 'include' // Include cookies for WordPress authentication
+            })
                 .then(response => response.json())
                 .then(data => {
-                    if (data.length > 0) {
+                    // Check for error response
+                    if (data.error) {
+                        console.error("Error fetching sent updates:", data.error, data.message || '');
+                        return;
+                    }
+                    // Ensure data is an array
+                    if (Array.isArray(data) && data.length > 0) {
                         updateSentUI(data);
                     }
                 })
@@ -567,13 +687,21 @@ $draft_emails = $wpdb->get_results("
         }
         
         function fetchDraftUpdates() {
-            console.log("updating sent emails")
-            fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?type=draft`)
+            console.log("updating draft emails")
+            fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?type=draft`, {
+                credentials: 'include' // Include cookies for WordPress authentication
+            })
                 .then(response => response.json())
                 .then(data => {
-                    // if (data.length > 0) {
+                    // Check for error response
+                    if (data.error) {
+                        console.error("Error fetching draft updates:", data.error, data.message || '');
+                        return;
+                    }
+                    // Ensure data is an array
+                    if (Array.isArray(data)) {
                         updateDraftUI(data);
-                    // }
+                    }
                 })
                 .catch(error => console.error("Error fetching new emails:", error));
         }
@@ -617,15 +745,26 @@ $draft_emails = $wpdb->get_results("
         
         // Function for editing draft
         function editDraft(id) {
-            fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?id=${id}`)
+            fetch(`/wp-content/themes/twentytwenty/templates/tpl_internal_email_backend.php?id=${id}`, {
+                credentials: 'include' // Include cookies for WordPress authentication
+            })
             .then(res => res.json())
             .then(data=>{
                 // populate modal with data
-                    $('#compose-modal').show();
-                    document.getElementById("receiver").value = data.receiver;
-                    document.getElementById("receiver").setAttribute("data-sender-id", data.receiver_id);
-                    document.getElementById("subject").value = data.subject;
-                    document.getElementById("message").value = data.message;
+                    document.getElementById('compose-modal').style.display = 'block';
+                    // Get receiver name - API returns receiver_id, we need to handle it
+                    const receiverId = data.receiver_id;
+                    if (receiverId) {
+                        // For now, we'll need to search for the user or use receiver_id
+                        // The API should return receiver name, but if not, we'll use receiver_id
+                        document.getElementById("receiver").value = data.receiver || '';
+                        document.getElementById("receiver").setAttribute("data-sender-id", receiverId);
+                    } else {
+                        document.getElementById("receiver").value = '';
+                        document.getElementById("receiver").setAttribute("data-sender-id", "");
+                    }
+                    document.getElementById("subject").value = data.subject || '';
+                    document.getElementById("message").value = data.message || '';
                     document.getElementById("draft-id").value = id;
 
             })
@@ -797,6 +936,20 @@ $draft_emails = $wpdb->get_results("
     
     .suggestions-list li:hover {
         background-color: #f0f0f0;
+    }
+    
+    /* Error Container Styles */
+    .error-container {
+        padding: 20px;
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        border-radius: 4px;
+        color: #721c24;
+        margin: 20px 0;
+    }
+    
+    .error-container p {
+        margin: 5px 0;
     }
     </style>
 </div>

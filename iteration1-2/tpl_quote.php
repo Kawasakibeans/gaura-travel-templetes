@@ -15,11 +15,56 @@ $currnt_userlogn = $current_user->user_login;
 $current_time = date('Y-m-d H:i:s');
 include("wp-config-custom.php");
 
+$api_base_url = API_BASE_URL;
+
+/**
+ * Helper function to call API
+ */
+function call_quote_api($endpoint, $params = []) {
+    global $api_base_url;
+    
+    $url = rtrim($api_base_url, '/') . '/' . ltrim($endpoint, '/');
+    if (!empty($params)) {
+        $url .= '?' . http_build_query($params);
+    }
+    
+    $response = wp_remote_get($url, [
+        'timeout' => 30,
+        'headers' => ['Accept' => 'application/json'],
+    ]);
+    
+    if (is_wp_error($response)) {
+        error_log('API call error: ' . $response->get_error_message());
+        return null;
+    }
+    
+    $http_code = wp_remote_retrieve_response_code($response);
+    if ($http_code !== 200) {
+        error_log('API call failed: HTTP ' . $http_code);
+        return null;
+    }
+    
+    $body = wp_remote_retrieve_body($response);
+    $decoded = json_decode($body, true);
+    
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        error_log('JSON decode error: ' . json_last_error_msg());
+        return null;
+    }
+    
+    if (($decoded['status'] ?? '') !== 'success') {
+        error_log('API error: ' . ($decoded['message'] ?? 'Unknown error'));
+        return null;
+    }
+    
+    return $decoded['data'] ?? null;
+}
+
 function getTimeRange($time) {
-                                    list($hour, $minute) = explode(':', $time);
-                                    $hour = intval($hour);
-                                    return $hour . '_' . ($hour + 1);
-                                }
+    list($hour, $minute) = explode(':', $time);
+    $hour = intval($hour);
+    return $hour . '_' . ($hour + 1);
+}
                                 
 if ( is_user_logged_in() ) 
 {
@@ -27,91 +72,91 @@ if ( is_user_logged_in() )
     $current_userId = $current_user ->ID;
     global $wpdb;
 
-    // add 'AND depart_date >= CURDATE()' if only need quote that has depart date later than today
-    $where = 'where 1=1 ';
+    // Build filters for API call
+    $filters = [];
     
-// filter by quote id
-if (isset($_GET['quote_id']) && !empty($_GET['quote_id'])) {
-    $quoteId = sanitize_text_field($_GET['quote_id']);
-    $where .= " AND q.id = '$quoteId'";
+    // filter by quote id
+    if (isset($_GET['quote_id']) && !empty($_GET['quote_id'])) {
+        $filters['quote_id'] = sanitize_text_field($_GET['quote_id']);
+    }
+
+    // filter by gdeals or not
+    if (isset($_GET['gdeals']) && ($_GET['gdeals'] === '0' || $_GET['gdeals'] === '1')) {
+        $filters['gdeals'] = sanitize_text_field($_GET['gdeals']);
+    }
+
+    // filter by quote date (from)
+    if (isset($_GET['from']) && $_GET['from'] !== '') {
+        $filters['from'] = sanitize_text_field($_GET['from']);
+    }
+
+    // filter by quote date (to)
+    if (isset($_GET['to']) && $_GET['to'] !== '') {
+        $filters['to'] = sanitize_text_field($_GET['to']);
+    }
+
+    // filter by depart date
+    if (isset($_GET['depart_date']) && $_GET['depart_date'] !== '') {
+        $filters['depart_date'] = sanitize_text_field($_GET['depart_date']);
+    }
+
+    // filter by email
+    if (isset($_GET['email']) && $_GET['email'] !== '') {
+        $filters['email'] = sanitize_text_field($_GET['email']);
+    }
+
+    // filter by phone number
+    if (isset($_GET['phone_num']) && $_GET['phone_num'] !== '') {
+        $filters['phone_num'] = sanitize_text_field($_GET['phone_num']);
+    }
+
+    // filter by userId
+    if (isset($_GET['user_id']) && $_GET['user_id'] !== '') {
+        $current_userId = $_GET['user_id'];
+        $filters['user_id'] = $current_userId;
+    }
+
+    // filter by callId
+    if (isset($_GET['call_id']) && $_GET['call_id'] !== '') {
+        $filters['call_id'] = sanitize_text_field($_GET['call_id']);
+    }
+
+    // Set default limit to 70 to match original query
+    $filters['limit'] = 70;
+
+    // Call API to get quotes
+    $api_result = call_quote_api('quotes', $filters);
+    $quotes = $api_result['quotes'] ?? [];
+    
+    // Convert array results to objects for compatibility with existing template code
+    if (!empty($quotes)) {
+        $quotes = array_map(function($quote) {
+            return (object) $quote;
+        }, $quotes);
+    }
 }
 
-// filter by gdeals or not
-if (isset($_GET['gdeals']) && ($_GET['gdeals'] === '0' || $_GET['gdeals'] === '1')) {
-    $gdeals = sanitize_text_field($_GET['gdeals']);
-    $where .= " AND is_gdeals = '$gdeals'";
-}
+// Multicity quotes query - replaced with API call
+$multicity_filters = [];
 
-// filter by quote date (from)
-if (isset($_GET['from']) && $_GET['from'] !== '') {
-    $quotedFrom = sanitize_text_field($_GET['from']);
-    $where .= " AND quoted_at >= '$quotedFrom 00:00:00'";
-}
-
-// filter by quote date (to)
-if (isset($_GET['to']) && $_GET['to'] !== '') {
-    $quotedTo = sanitize_text_field($_GET['to']);
-    $where .= " AND quoted_at <= '$quotedTo 23:59:59'";
-}
-
-// filter by depart date
-if (isset($_GET['depart_date']) && $_GET['depart_date'] !== '') {
-    $departDate = sanitize_text_field($_GET['depart_date']);
-    $where .= " AND q.depart_date = '$departDate'";
-}
-
-// filter by email
-if (isset($_GET['email']) && $_GET['email'] !== '') {
-    $email = sanitize_text_field($_GET['email']);
-    $where .= " AND q.email LIKE '%$email%'";
-}
-
-// filter by phone number
-if (isset($_GET['phone_num']) && $_GET['phone_num'] !== '') {
-    $phoneNum = sanitize_text_field($_GET['phone_num']);
-    $where .= " AND q.phone_num LIKE '%$phoneNum%'";
-}
-
-// filter by userId
-if (isset($_GET['user_id']) && $_GET['user_id'] !== '') {
-
-    $current_userId = $_GET['user_id'];
-    $where .= " AND user_id = $current_userId";
-}
-
-// filter by callId
-if (isset($_GET['call_id']) && $_GET['call_id'] !== '') {
-    $callId = $_GET['call_id'];
-    $where .= " AND call_record_id = $callId";
-}
-
-    $quotes = $wpdb->get_results( 
-        " 
-         SELECT r.rec_duration as duration, r.rec_status as call_status, q.*, u.display_name 
-         FROM wpk4_quote q 
-         LEFT JOIN wpk4_users u ON q.user_id = u.ID
-         LEFT JOIN wpk4_backend_agent_nobel_data_call_rec r ON q.call_record_id = r.d_record_id
-         $where
-         ORDER BY q.quoted_at DESC limit 70
-         " );
-}
-
-// Multicity quotes query (after single-route quotes query)
-$multicity_where = 'WHERE 1=1 ';
-// Example: filter by multicity quote id (add more filters as needed)
+// filter by multicity quote id
 if (isset($_GET['multi_quote_id']) && !empty($_GET['multi_quote_id'])) {
-    $multiQuoteId = sanitize_text_field($_GET['multi_quote_id']);
-    $multicity_where .= " AND id = '$multiQuoteId'";
+    $multicity_filters['multi_quote_id'] = sanitize_text_field($_GET['multi_quote_id']);
 }
-// You can add more filters here, similar to the single-route logic
-$multicity_quotes = $wpdb->get_results("
-    SELECT q.*, u.display_name 
-    FROM wpk4_quote_multicity q
-    LEFT JOIN wpk4_users u ON q.user_id = u.ID
-    $multicity_where
-    ORDER BY q.quoted_at DESC
-    LIMIT 5
-");
+
+// Set default limit to 5 to match original query
+$multicity_filters['limit'] = 5;
+
+// Call API to get multicity quotes
+$multicity_api_result = call_quote_api('quotes/multicity', $multicity_filters);
+$multicity_quotes = $multicity_api_result['quotes'] ?? [];
+
+// Convert array results to objects for compatibility with existing template code
+if (!empty($multicity_quotes)) {
+    $multicity_quotes = array_map(function($quote) {
+        return (object) $quote;
+    }, $multicity_quotes);
+}
 ?>
 
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -484,20 +529,25 @@ $multicity_quotes = $wpdb->get_results("
                     $is_multicity = isset($quote->is_multicity) && $quote->is_multicity == 1;
                     $multicity = null;
                     if ($is_multicity) {
-                        $multicity = $wpdb->get_row($wpdb->prepare("SELECT * FROM wpk4_quote_multicity WHERE id = %d", $quote->id));
+                        // Get multicity info via API
+                        $multicity_api_result = call_quote_api('quotes/' . $quote->id);
+                        if ($multicity_api_result && isset($multicity_api_result['multicity'])) {
+                            $multicity = (object) $multicity_api_result['multicity'];
+                        }
                     }
                     ?>
                     <?php
                     $highlighted_row = '';
-                     $subquote_count = $wpdb->get_var($wpdb->prepare("
-                                    SELECT COUNT(*) 
-                                    FROM wpk4_quote_G360
-                                    WHERE original_quote_id = %d
-                                ", $quote->id));
-                                if($subquote_count > 0)
-                                {
-                                    $highlighted_row = ' style="background-color:#f5d0ce;"';
-                                }
+                    // Get G360 subquotes count via API
+                    $subquotes_api_result = call_quote_api('quotes/' . $quote->id . '/g360-subquotes');
+                    $subquote_count = 0;
+                    if ($subquotes_api_result && isset($subquotes_api_result['count'])) {
+                        $subquote_count = (int) $subquotes_api_result['count'];
+                    }
+                    if($subquote_count > 0)
+                    {
+                        $highlighted_row = ' style="background-color:#f5d0ce;"';
+                    }
                     ?>
                         <tr <?php echo $highlighted_row; ?>>
                             <td><?php echo esc_html( $quote->call_record_id ); ?></td>
@@ -596,7 +646,7 @@ $multicity_quotes = $wpdb->get_results("
                             
                              <td>
                                 <?php if (!$is_multicity) :
-                                $subquote_count = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM wpk4_quote_G360 WHERE original_quote_id = %d", $quote->id));
+                                // Use the subquote_count already fetched above
                                 if ($subquote_count > 0) : ?>
                                     <button class='view-subquotes-button' data-quote-id='<?php echo esc_attr($quote->id); ?>'>View</button>
                                 <?php endif;
@@ -614,12 +664,16 @@ $multicity_quotes = $wpdb->get_results("
                             ?>
                             </td>
                             <td><?php if (!$is_multicity) {
-                                echo esc_html($quote->display_name);
+                                echo esc_html($quote->display_name ?? '');
                             }else{
-                                
-                                $user = $wpdb->get_row($wpdb->prepare("SELECT display_name FROM wpk4_users WHERE ID = %d", $multicity->user_id));
-
-                                echo esc_html($user->display_name);
+                                // display_name should already be in multicity data from API (from JOIN in multicity quotes query)
+                                if ($multicity && isset($multicity->display_name)) {
+                                    echo esc_html($multicity->display_name);
+                                } else {
+                                    // If multicity was fetched via /v1/quotes/{id}, it might not have display_name
+                                    // In that case, we can get it from the multicity quotes list if available
+                                    echo esc_html($quote->display_name ?? '');
+                                }
                             } 
                             ?></td>
                             <td><?php 

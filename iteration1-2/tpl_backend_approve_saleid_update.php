@@ -5,138 +5,304 @@
  */
 
 get_header();
-global $wpdb;
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// global $wpdb;
+// ============================================================================
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
 
-// Handle status update
+$base_url = API_BASE_URL;
+
+// Handle status update via API
 if (isset($_POST['approve_record'])) {
     $record_id = intval($_POST['record_id']);
+    $current_user = wp_get_current_user();
+    $modified_by = $current_user->user_login ?? 'system';
     
-    // Get the record being approved
-    $record = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM wpk4_saleid_update WHERE id = %d",
-        $record_id
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => API_BASE_URL.'/saleid-updates/' . $record_id . '/approve',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 0,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_POSTFIELDS => json_encode(['modified_by' => $modified_by]),
+        CURLOPT_HTTPHEADER => array(
+            'Content-Type: application/json'
+        ),
     ));
     
-    if ($record) {
-        // Start transaction
-        $wpdb->query('START TRANSACTION');
-        
-        try {
-            // Update saleid_update table
-            $result1 = $wpdb->update(
-                'wpk4_saleid_update',
-                array(
-                    'is_checked' => 1,
-                    'status' => 'approved',
-                    'modified_date' => current_time('mysql'),
-                    'modified_by' => wp_get_current_user()->user_login
-                ),
-                array('id' => $record_id),
-                array('%d', '%s', '%s', '%s'),
-                array('%d')
-            );
-            
-            // Update backend_travel_bookings table
-            $result2 = $wpdb->update(
-                'wpk4_backend_travel_bookings',
-                array(
-                    'agent_info' => $record->new_sale_id,
-                ),
-                array('order_id' => $record->order_id),
-                array('%s'),
-                array('%s')
-            );
-            
-            $result3 = $wpdb->update(
-                'wpk4_backend_travel_bookings_realtime',
-                array(
-                    'agent_info' => $record->new_sale_id,
-                ),
-                array('order_id' => $record->order_id),
-                array('%s'),
-                array('%s')
-            );
-            
-            if ($result1 !== false && $result2 !== false && $result3 !== false) {
-                $wpdb->query('COMMIT');
-                echo '<div class="notice notice-success"><p>Record approved successfully! Agent info updated in travel bookings.</p></div>';
-            } else {
-                $wpdb->query('ROLLBACK');
-                echo '<div class="notice notice-error"><p>Error approving record: ' . $wpdb->last_error . '</p></div>';
-            }
-        } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            echo '<div class="notice notice-error"><p>Error: ' . $e->getMessage() . '</p></div>';
-        }
+    $response = curl_exec($curl);
+    $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+    
+    $responseData = json_decode($response, true);
+    
+    if ($httpCode === 201 && isset($responseData['status']) && $responseData['status'] === 'success') {
+        echo '<div class="notice notice-success"><p>Record approved successfully! Agent info updated in travel bookings.</p></div>';
     } else {
-        echo '<div class="notice notice-error"><p>Record not found!</p></div>';
+        $errorMsg = $responseData['message'] ?? 'Error approving record';
+        echo '<div class="notice notice-error"><p>' . esc_html($errorMsg) . '</p></div>';
     }
 }
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// if (isset($_POST['approve_record'])) {
+//     $record_id = intval($_POST['record_id']);
+//     
+//     // Get the record being approved
+//     $record = $wpdb->get_row($wpdb->prepare(
+//         "SELECT * FROM wpk4_saleid_update WHERE id = %d",
+//         $record_id
+//     ));
+//     
+//     if ($record) {
+//         // Start transaction
+//         $wpdb->query('START TRANSACTION');
+//         
+//         try {
+//             // Update saleid_update table
+//             $result1 = $wpdb->update(
+//                 'wpk4_saleid_update',
+//                 array(
+//                     'is_checked' => 1,
+//                     'status' => 'approved',
+//                     'modified_date' => current_time('mysql'),
+//                     'modified_by' => wp_get_current_user()->user_login
+//                 ),
+//                 array('id' => $record_id),
+//                 array('%d', '%s', '%s', '%s'),
+//                 array('%d')
+//             );
+//             
+//             // Update backend_travel_bookings table
+//             $result2 = $wpdb->update(
+//                 'wpk4_backend_travel_bookings',
+//                 array(
+//                     'agent_info' => $record->new_sale_id,
+//                 ),
+//                 array('order_id' => $record->order_id),
+//                 array('%s'),
+//                 array('%s')
+//             );
+//             
+//             $result3 = $wpdb->update(
+//                 'wpk4_backend_travel_bookings_realtime',
+//                 array(
+//                     'agent_info' => $record->new_sale_id,
+//                 ),
+//                 array('order_id' => $record->order_id),
+//                 array('%s'),
+//                 array('%s')
+//             );
+//             
+//             if ($result1 !== false && $result2 !== false && $result3 !== false) {
+//                 $wpdb->query('COMMIT');
+//                 echo '<div class="notice notice-success"><p>Record approved successfully! Agent info updated in travel bookings.</p></div>';
+//             } else {
+//                 $wpdb->query('ROLLBACK');
+//                 echo '<div class="notice notice-error"><p>Error approving record: ' . $wpdb->last_error . '</p></div>';
+//             }
+//         } catch (Exception $e) {
+//             $wpdb->query('ROLLBACK');
+//             echo '<div class="notice notice-error"><p>Error: ' . $e->getMessage() . '</p></div>';
+//         }
+//     } else {
+//         echo '<div class="notice notice-error"><p>Record not found!</p></div>';
+//     }
+// }
+// ============================================================================
 
 if (isset($_POST['reject_record'])) {
     $record_id = intval($_POST['record_id']);
+    $current_user = wp_get_current_user();
+    $modified_by = $current_user->user_login ?? 'system';
     
-    $record = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM wpk4_saleid_update WHERE id = %d",
-        $record_id
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => API_BASE_URL .'/saleid-updates/' . $record_id . '/reject',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 0,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_POSTFIELDS => json_encode(['modified_by' => $modified_by]),
+        CURLOPT_HTTPHEADER => array(
+            'Content-Type: application/json'
+        ),
     ));
-
-    if ($record) {
-        $result = $wpdb->update(
-            'wpk4_saleid_update',
-            array(
-                'is_checked' => 1,
-                'status' => 'rejected',
-                'modified_date' => current_time('mysql'),
-                'modified_by' => wp_get_current_user()->user_login
-            ),
-            array('id' => $record_id),
-            array('%d', '%s', '%s', '%s'),
-            array('%d')
-        );
-
-        if ($result !== false) {
-            echo '<div class="notice notice-warning"><p>Record rejected successfully.</p></div>';
-        } else {
-            echo '<div class="notice notice-error"><p>Error rejecting record: ' . $wpdb->last_error . '</p></div>';
-        }
+    
+    $response = curl_exec($curl);
+    $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+    
+    $responseData = json_decode($response, true);
+    
+    if ($httpCode === 201 && isset($responseData['status']) && $responseData['status'] === 'success') {
+        echo '<div class="notice notice-warning"><p>Record rejected successfully.</p></div>';
     } else {
-        echo '<div class="notice notice-error"><p>Record not found!</p></div>';
+        $errorMsg = $responseData['message'] ?? 'Error rejecting record';
+        echo '<div class="notice notice-error"><p>' . esc_html($errorMsg) . '</p></div>';
     }
 }
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// if (isset($_POST['reject_record'])) {
+//     $record_id = intval($_POST['record_id']);
+//     
+//     $record = $wpdb->get_row($wpdb->prepare(
+//         "SELECT * FROM wpk4_saleid_update WHERE id = %d",
+//         $record_id
+//     ));
+//
+//     if ($record) {
+//         $result = $wpdb->update(
+//             'wpk4_saleid_update',
+//             array(
+//                 'is_checked' => 1,
+//                 'status' => 'rejected',
+//                 'modified_date' => current_time('mysql'),
+//                 'modified_by' => wp_get_current_user()->user_login
+//             ),
+//             array('id' => $record_id),
+//             array('%d', '%s', '%s', '%s'),
+//             array('%d')
+//         );
+//
+//         if ($result !== false) {
+//             echo '<div class="notice notice-warning"><p>Record rejected successfully.</p></div>';
+//         } else {
+//             echo '<div class="notice notice-error"><p>Error rejecting record: ' . $wpdb->last_error . '</p></div>';
+//         }
+//     } else {
+//         echo '<div class="notice notice-error"><p>Record not found!</p></div>';
+//     }
+// }
+// ============================================================================
     
 
+// Get unique values for filters via API
+$curl_order_ids = curl_init();
+curl_setopt_array($curl_order_ids, array(
+    CURLOPT_URL => API_BASE_URL .'/saleid-updates/filters/order-ids',
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_ENCODING => '',
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 0,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => 'GET',
+));
+$response_order_ids = curl_exec($curl_order_ids);
+curl_close($curl_order_ids);
+$responseData_order_ids = json_decode($response_order_ids, true);
+$unique_order_ids = [];
+if (isset($responseData_order_ids['status']) && $responseData_order_ids['status'] === 'success' && isset($responseData_order_ids['data']['order_ids'])) {
+    $unique_order_ids = $responseData_order_ids['data']['order_ids'];
+}
 
-// Get unique values for filters
-$unique_order_ids = $wpdb->get_col("SELECT DISTINCT order_id FROM wpk4_saleid_update ORDER BY order_id");
-$unique_dates = $wpdb->get_col("SELECT DISTINCT DATE(created_date) FROM wpk4_saleid_update ORDER BY created_date DESC");
+$curl_dates = curl_init();
+curl_setopt_array($curl_dates, array(
+    CURLOPT_URL => API_BASE_URL .'/saleid-updates/filters/dates',
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_ENCODING => '',
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 0,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => 'GET',
+));
+$response_dates = curl_exec($curl_dates);
+curl_close($curl_dates);
+$responseData_dates = json_decode($response_dates, true);
+$unique_dates = [];
+if (isset($responseData_dates['status']) && $responseData_dates['status'] === 'success' && isset($responseData_dates['data']['dates'])) {
+    $unique_dates = $responseData_dates['data']['dates'];
+}
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// // Get unique values for filters
+// $unique_order_ids = $wpdb->get_col("SELECT DISTINCT order_id FROM wpk4_saleid_update ORDER BY order_id");
+// $unique_dates = $wpdb->get_col("SELECT DISTINCT DATE(created_date) FROM wpk4_saleid_update ORDER BY created_date DESC");
+// ============================================================================
 
 // Handle filter submission
 $order_id_filter = isset($_GET['order_id_filter']) ? sanitize_text_field($_GET['order_id_filter']) : '';
 $date_filter = isset($_GET['date_filter']) ? sanitize_text_field($_GET['date_filter']) : '';
 
-// Build the query with filters
-$query = "SELECT * FROM wpk4_saleid_update WHERE 1=1 and LOWER(status) = 'pending'";
-$query_params = array();
-
+// Fetch filtered records via API
+$url = API_BASE_URL .'/saleid-updates';
+$params = [];
 if (!empty($order_id_filter)) {
-    $query .= " AND order_id = %s";
-    $query_params[] = $order_id_filter;
+    $params['order_id'] = $order_id_filter;
 }
-
 if (!empty($date_filter)) {
-    $query .= " AND DATE(created_date) = %s";
-    $query_params[] = $date_filter;
+    $params['date'] = $date_filter;
+}
+if (!empty($params)) {
+    $url .= '?' . http_build_query($params);
 }
 
-$query .= " ORDER BY created_date DESC";
-
-if (!empty($query_params)) {
-    $query = $wpdb->prepare($query, $query_params);
+$curl_records = curl_init();
+curl_setopt_array($curl_records, array(
+    CURLOPT_URL => $url,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_ENCODING => '',
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 0,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => 'GET',
+));
+$response_records = curl_exec($curl_records);
+curl_close($curl_records);
+$responseData_records = json_decode($response_records, true);
+$records = [];
+if (isset($responseData_records['status']) && $responseData_records['status'] === 'success' && isset($responseData_records['data']['records'])) {
+    // Convert array of arrays to array of objects for compatibility
+    foreach ($responseData_records['data']['records'] as $record) {
+        $records[] = (object)$record;
+    }
 }
 
-// Fetch filtered records
-$records = $wpdb->get_results($query);
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// // Build the query with filters
+// $query = "SELECT * FROM wpk4_saleid_update WHERE 1=1 and LOWER(status) = 'pending'";
+// $query_params = array();
+//
+// if (!empty($order_id_filter)) {
+//     $query .= " AND order_id = %s";
+//     $query_params[] = $order_id_filter;
+// }
+//
+// if (!empty($date_filter)) {
+//     $query .= " AND DATE(created_date) = %s";
+//     $query_params[] = $date_filter;
+// }
+//
+// $query .= " ORDER BY created_date DESC";
+//
+// if (!empty($query_params)) {
+//     $query = $wpdb->prepare($query, $query_params);
+// }
+//
+// // Fetch filtered records
+// $records = $wpdb->get_results($query);
+// ============================================================================
 ?>
 
 <div class="wrap">
@@ -259,16 +425,36 @@ jQuery(document).ready(function($) {
         // Find the corresponding Approve button and enable/disable it
         $(this).closest('tr').find('.approve-button').prop('disabled', !isChecked);
         
-        // Update the database via AJAX
+        // Update the database via AJAX API
         $.ajax({
-            url: ajaxurl,
-            type: 'POST',
-            data: {
-                action: 'update_check_status',
-                record_id: recordId,
+            url: 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api_test_pamitha/public/v1/saleid-updates/' + recordId + '/check-status',
+            type: 'PATCH',
+            contentType: 'application/json',
+            data: JSON.stringify({
                 is_checked: isChecked ? 1 : 0
+            }),
+            success: function(response) {
+                // Optional: Handle success
+            },
+            error: function(xhr, status, error) {
+                // Optional: Handle error
+                console.error('Error updating check status:', error);
             }
         });
+        
+        // ============================================================================
+        // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+        // ============================================================================
+        // $.ajax({
+        //     url: ajaxurl,
+        //     type: 'POST',
+        //     data: {
+        //         action: 'update_check_status',
+        //         record_id: recordId,
+        //         is_checked: isChecked ? 1 : 0
+        //     }
+        // });
+        // ============================================================================
     });
 });
 </script>

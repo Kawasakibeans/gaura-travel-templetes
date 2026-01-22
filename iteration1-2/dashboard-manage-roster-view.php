@@ -13,6 +13,58 @@ $isAdmin = in_array('administrator', (array) $current_user->roles);
 // Get mapped sales manager name
 global $wpdb;
 
+if (!defined('API_BASE_URL')) {
+    throw new RuntimeException('API_BASE_URL is not defined');
+}
+
+function roster_api_request(string $method, string $path, array $options = []): array
+{
+    $baseUrl = rtrim(API_BASE_URL, '/');
+    $url = $baseUrl . $path;
+    $args = [
+        'timeout' => 30,
+        'headers' => [
+            'Accept' => 'application/json',
+        ],
+    ];
+
+    if ($method === 'GET') {
+        if (!empty($options)) {
+            $url .= '?' . http_build_query($options);
+        }
+        $response = wp_remote_get($url, $args);
+    } else {
+        $args['headers']['Content-Type'] = 'application/json';
+        $args['body'] = wp_json_encode($options);
+        $response = wp_remote_post($url, $args);
+    }
+
+    if (is_wp_error($response)) {
+        throw new RuntimeException($response->get_error_message());
+    }
+
+    $payload = json_decode(wp_remote_retrieve_body($response), true);
+    if (!is_array($payload)) {
+        throw new RuntimeException('Invalid API response');
+    }
+
+    if (($payload['status'] ?? '') !== 'success') {
+        $message = $payload['message'] ?? 'API error';
+        throw new RuntimeException($message);
+    }
+
+    return $payload['data'] ?? [];
+}
+
+function roster_api_get(string $path, array $query = []): array
+{
+    return roster_api_request('GET', $path, $query);
+}
+
+function roster_api_post(string $path, array $body = []): array
+{
+    return roster_api_request('POST', $path, $body);
+}
 
 ?>
 
@@ -203,7 +255,7 @@ html, body {
 
     <div class="container mt-4">
         <?php
-        date_default_timezone_set('Asia/Kolkata'); // IST timezone
+        date_default_timezone_set('Asia/Kolkata');
         $selectedTeam = isset($_GET['team']) ? sanitize_text_field($_GET['team']) : '';
         $selectedRosterType = isset($_GET['roster_type']) ? sanitize_text_field($_GET['roster_type']) : '';
         $selectedSalesManager = isset($_GET['sale_manager']) ? sanitize_text_field($_GET['sale_manager']) : '';
@@ -211,9 +263,7 @@ html, body {
         $monthToShow = isset($_GET['month']) ? intval($_GET['month']) : date('n');
         $yearToShow = isset($_GET['year']) ? intval($_GET['year']) : date('Y');
 
-        // Convert numeric month to month name for database comparison
         $monthNameForDB = date('F', mktime(0, 0, 0, $monthToShow, 1, $yearToShow));
-
         $firstDayOfMonth = strtotime("$yearToShow-$monthToShow-01");
         $displayMonthName = date('F', $firstDayOfMonth);
         $daysInMonth = date('t', $firstDayOfMonth);
@@ -237,214 +287,206 @@ html, body {
             return $url;
         }
 
-        // Build the base query - using month name for comparison and joining with agent_codes table
+        $teams = [];
+        $salesManagers = [];
+        $rosterTypes = [];
+        $shiftTimes = [];
 
-        if ($isAdmin) {
-            // Admin sees all records
-            $query = "SELECT r.*
-                      FROM wpk4_backend_employee_roster r
-                      WHERE r.month = %s AND r.year = %d";
-            $query_params = array($monthNameForDB, $yearToShow);
-        } else {
-            // Manager sees only their team
-            $managerName = $wpdb->get_var( $wpdb->prepare(
-                "SELECT DISTINCT sale_manager 
-                 FROM wpk4_backend_agent_codes 
-                 WHERE wordpress_user_name = %s" 
-            ));
-        
-            $query = "SELECT r.*
-                      FROM wpk4_backend_employee_roster r
-                      WHERE r.month = %s AND r.year = %d";
-            $query_params = array($monthNameForDB, $yearToShow);
+        try {
+            $filtersResponse = roster_api_get('/roster/filters');
+            $teams = $filtersResponse['teams'] ?? [];
+            $salesManagers = $filtersResponse['sales_managers'] ?? [];
+            $rosterTypes = $filtersResponse['departments'] ?? [];
+            $shiftTimes = $filtersResponse['shift_times'] ?? [];
+        } catch (Throwable $e) {
+            error_log('[roster-view] Failed to load filters: ' . $e->getMessage());
         }
 
-
-
-        // Add filters to the query
-        if (!empty($selectedTeam)) {
-            $query .= " AND r.team = %s";
-            $query_params[] = $selectedTeam;
-        }
-        if (!empty($selectedRosterType)) {
-            $query .= " AND r.department = %s";
-            $query_params[] = $selectedRosterType;
-        }
-        if (!empty($selectedSalesManager)) {
-            $query .= " AND r.sm = %s";
-            $query_params[] = $selectedSalesManager;
-        }
-        if (!empty($selectedShiftTime)) {
-            $query .= " AND r.shift_time = %s";
-            $query_params[] = $selectedShiftTime;
-        }
-
-        $rosters = $wpdb->get_results($wpdb->prepare($query, $query_params));
-
-        // Get distinct values for filters from agent_codes table
-        $teams = $wpdb->get_col("SELECT DISTINCT team FROM wpk4_backend_employee_roster ORDER BY team");
-        $salesManagers = $wpdb->get_col("SELECT DISTINCT sm FROM wpk4_backend_employee_roster ORDER BY sm");
-        
-        // Get roster types and shift times from employee_roster table joined with agent_codes table
-        $rosterTypes = $wpdb->get_col("
-            SELECT DISTINCT r.department 
-            FROM wpk4_backend_employee_roster r
-            WHERE r.department != ' ' 
-            ORDER BY r.department
-        ");
-        
-        $shiftTimes = $wpdb->get_col("
-            SELECT DISTINCT r.shift_time 
-            FROM wpk4_backend_employee_roster r
-            JOIN wpk4_backend_agent_codes a ON r.employee_code = a.roster_code
-            WHERE r.shift_time != '' 
-            ORDER BY r.shift_time
-        ");
-
-        // Prepare day data
-        $dayData = array();
-for ($day = 1; $day <= $daysInMonth; $day++) {
-    $dayData[$day] = array(
-        'shifts' => array(),
-        'rdo' => array(),
-        'leave' => array(),
-        'convert' => array(),
-        'ulwp' => array()
-    );
-}
-
-// Get "now" in Sydney timezone
-$now = new DateTime('now', new DateTimeZone('Asia/Kolkata'));
-$todayDay = (int)date('j');
-$todayMonth = (int)date('n');
-$todayYear = (int)date('Y');
-
-foreach ($rosters as $roster) {
-    for ($day = 1; $day <= $daysInMonth; $day++) {
-        $column = 'day_' . $day;
-        if (!isset($roster->$column)) continue;
-
-        $status = strtoupper(trim($roster->$column));
-        $employeeInfo = array(
-            'name' => $roster->employee_name,
-            'code' => $roster->employee_code,
-            'team' => $roster->team, 
-            'tl' => $roster->tl,
-            'sm' => $roster->sm,
-            'shift_time' => $roster->shift_time,
-            'status' => $status
-        );
-
-        $empCode = $roster->employee_code;
-        $dateStr = sprintf('%02d/%02d/%04d', $day, $monthToShow, $yearToShow);
-
-        $login_time = '';
-        $login_date = '';
-        $logout_time = '';
-        $logout_date = '';
-        $all_events = [];
-
-        // --- Attendance events ---
-        if (!empty($empCode)) {
-            $events = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT Etime, EntryExitType, Edate
-                     FROM wpk4_Mx_VEW_UserAttendanceEvents
-                     WHERE UserID = %s AND Edate = %s
-                     ORDER BY Etime ASC",
-                    $empCode, $dateStr
-                ),
-                ARRAY_A
-            );
-            $all_events = $events ?: [];
-            foreach ($events as $ev) {
-                if ($ev['EntryExitType'] == 0) {
-                    $login_time = $ev['Etime'];
-                    $login_date = $ev['Edate'];
-                    break;
+        if (!$isAdmin) {
+            try {
+                $agentResponse = roster_api_get('/employee-schedule/agent-by-user', [
+                    'wordpress_user_name' => $loggedInLogin,
+                ]);
+                $managerName = $agentResponse['agent']['sale_manager'] ?? '';
+                if ($selectedSalesManager === '' && $managerName !== '') {
+                    $selectedSalesManager = $managerName;
                 }
-            }
-            for ($i = count($events) - 1; $i >= 0; $i--) {
-                $ev = $events[$i];
-                if ($ev['EntryExitType'] == 1) {
-                    $logout_time = $ev['Etime'];
-                    $logout_date = $ev['Edate'];
-                    break;
-                }
+            } catch (Throwable $e) {
+                error_log('[roster-view] Failed to load agent info: ' . $e->getMessage());
             }
         }
 
-        $employeeInfo['attendance'] = [
-            'Punch1_Date' => $login_date ?: '-',
-            'COL35'       => $login_time ?: '-',
-            'COL126'      => $logout_time ?: '-',
-            'COL125'      => $logout_date ?: '-',
+        $rosterParams = [
+            'month' => $monthToShow,
+            'year' => $yearToShow,
         ];
-        $employeeInfo['all_events'] = $all_events;
-        $employeeInfo['attendance_missing'] = ($login_time === '' && $logout_time === '');
-
-        // Always add to main group
-        if ($status === 'RDO') {
-            $dayData[$day]['rdo'][] = $employeeInfo;
-        } elseif ($status === 'LEAVE') {
-            $dayData[$day]['leave'][] = $employeeInfo;
-        } elseif ($status === 'CONVERT') {
-            $dayData[$day]['convert'][] = $employeeInfo;
-        } elseif ($status === 'ULWP') {
-            $dayData[$day]['ulwp'][] = $employeeInfo;
-        } elseif (!empty($status)) {
-            // Add to shift group
-            if (!isset($dayData[$day]['shifts'][$status])) {
-                $dayData[$day]['shifts'][$status] = array();
-            }
-            $dayData[$day]['shifts'][$status][] = $employeeInfo;
+        if ($selectedTeam !== '') {
+            $rosterParams['team'] = $selectedTeam;
+        }
+        if ($selectedRosterType !== '') {
+            $rosterParams['department'] = $selectedRosterType;
+        }
+        if ($selectedSalesManager !== '') {
+            $rosterParams['sale_manager'] = $selectedSalesManager;
+        }
+        if ($selectedShiftTime !== '') {
+            $rosterParams['shift_time'] = $selectedShiftTime;
         }
 
-        // Now, *separately*, decide whether to add to ULWP group:
-        $isToday = ($day == $todayDay && $monthToShow == $todayMonth && $yearToShow == $todayYear);
-$hasAttendance = !$employeeInfo['attendance_missing'];
+        try {
+            $rosters = roster_api_get('/roster/data', $rosterParams);
+        } catch (Throwable $e) {
+            $rosters = [];
+            error_log('[roster-view] Failed to load roster data: ' . $e->getMessage());
+        }
 
-if ($status !== 'RDO' && $status !== 'LEAVE' && $status !== 'CONVERT') {
-    if ($isToday && !$hasAttendance) {
-        $shiftTimeRaw = $employeeInfo['shift_time'];
-        if (preg_match('/^(\d{2})(\d{2})$/', $shiftTimeRaw, $m)) {
-            $shiftHour = intval($m[1]);
-            $shiftMin = intval($m[2]);
-            $shiftStart = new DateTime($now->format('Y-m-d') . sprintf(' %02d:%02d:00', $shiftHour, $shiftMin), new DateTimeZone('Australia/Sydney'));
-            $shiftStart->modify('+30 minutes');
-            // DEBUG: uncomment this to check values
-            // error_log("Agent: {$employeeInfo['name']} Now: " . $now->format('Y-m-d H:i:s') . " Shift+30: " . $shiftStart->format('Y-m-d H:i:s'));
-            if ($now >= $shiftStart) {
-                $ulwpCopy = $employeeInfo;
-                $ulwpCopy['status'] = 'ULWP';
-                $dayData[$day]['ulwp'][] = $ulwpCopy;
-            }
-        } else {
-            // If no/invalid shift time, use 8am fallback
-            $shiftStart = new DateTime($now->format('Y-m-d') . ' 08:00:00', new DateTimeZone('Australia/Sydney'));
-            if ($now >= $shiftStart) {
-                $ulwpCopy = $employeeInfo;
-                $ulwpCopy['status'] = 'ULWP';
-                $dayData[$day]['ulwp'][] = $ulwpCopy;
+        $dateStrings = [];
+        for ($day = 1; $day <= $daysInMonth; $day++) {
+            $dateStrings[] = sprintf('%02d/%02d/%04d', $day, $monthToShow, $yearToShow);
+        }
+
+        $employeeCodes = array_values(array_unique(array_filter(array_map(function ($row) {
+            return $row['employee_code'] ?? '';
+        }, $rosters))));
+
+        $attendanceMap = [];
+        if (!empty($employeeCodes) && !empty($dateStrings)) {
+            try {
+                $attendanceResponse = roster_api_post('/roster/attendance/bulk', [
+                    'employee_codes' => $employeeCodes,
+                    'dates' => $dateStrings,
+                ]);
+                $attendanceMap = $attendanceResponse['records'] ?? [];
+            } catch (Throwable $e) {
+                error_log('[roster-view] Failed to load attendance data: ' . $e->getMessage());
             }
         }
-    } elseif (!$isToday && !$hasAttendance) {
-        // Past days, always add to ULWP if missing
-        $ulwpCopy = $employeeInfo;
-        $ulwpCopy['status'] = 'ULWP';
-        $dayData[$day]['ulwp'][] = $ulwpCopy;
-    }
-}
 
-    }
-}
+        $dayData = [];
+        for ($day = 1; $day <= $daysInMonth; $day++) {
+            $dayData[$day] = [
+                'shifts' => [],
+                'rdo' => [],
+                'leave' => [],
+                'convert' => [],
+                'ulwp' => [],
+            ];
+        }
 
-    
+        $now = new DateTime('now', new DateTimeZone('Asia/Kolkata'));
+        $todayDay = (int)$now->format('j');
+        $todayMonth = (int)$now->format('n');
+        $todayYear = (int)$now->format('Y');
+
+        foreach ($rosters as $roster) {
+            $employeeName = $roster['employee_name'] ?? '';
+            $empCode = $roster['employee_code'] ?? '';
+            if ($empCode === '') {
+                continue;
+            }
+
+            for ($day = 1; $day <= $daysInMonth; $day++) {
+                $column = 'day_' . $day;
+                $status = strtoupper(trim($roster[$column] ?? ''));
+
+                $employeeInfo = [
+                    'name' => $employeeName,
+                    'code' => $empCode,
+                    'team' => $roster['team'] ?? '',
+                    'tl' => $roster['tl'] ?? '',
+                    'sm' => $roster['sm'] ?? '',
+                    'shift_time' => $roster['shift_time'] ?? '',
+                    'status' => $status,
+                ];
+
+                $dateStr = sprintf('%02d/%02d/%04d', $day, $monthToShow, $yearToShow);
+                $events = $attendanceMap[$empCode][$dateStr] ?? [];
+
+                $login_time = '';
+                $login_date = '';
+                $logout_time = '';
+                $logout_date = '';
+
+                if (!empty($events)) {
+                    foreach ($events as $ev) {
+                        if ((int)($ev['EntryExitType'] ?? -1) === 0) {
+                            $login_time = $ev['Etime'] ?? '';
+                            $login_date = $ev['Edate'] ?? '';
+                            break;
+                        }
+                    }
+                    for ($i = count($events) - 1; $i >= 0; $i--) {
+                        $ev = $events[$i];
+                        if ((int)($ev['EntryExitType'] ?? -1) === 1) {
+                            $logout_time = $ev['Etime'] ?? '';
+                            $logout_date = $ev['Edate'] ?? '';
+                            break;
+                        }
+                    }
+                }
+
+                $employeeInfo['attendance'] = [
+                    'Punch1_Date' => $login_date ?: '-',
+                    'COL35' => $login_time ?: '-',
+                    'COL126' => $logout_time ?: '-',
+                    'COL125' => $logout_date ?: '-',
+                ];
+                $employeeInfo['all_events'] = $events;
+                $employeeInfo['attendance_missing'] = ($login_time === '' && $logout_time === '');
+
+                if ($status === 'RDO') {
+                    $dayData[$day]['rdo'][] = $employeeInfo;
+                } elseif ($status === 'LEAVE') {
+                    $dayData[$day]['leave'][] = $employeeInfo;
+                } elseif ($status === 'CONVERT') {
+                    $dayData[$day]['convert'][] = $employeeInfo;
+                } elseif ($status === 'ULWP') {
+                    $dayData[$day]['ulwp'][] = $employeeInfo;
+                } elseif ($status !== '') {
+                    if (!isset($dayData[$day]['shifts'][$status])) {
+                        $dayData[$day]['shifts'][$status] = [];
+                    }
+                    $dayData[$day]['shifts'][$status][] = $employeeInfo;
+                }
+
+                $isToday = ($day == $todayDay && $monthToShow == $todayMonth && $yearToShow == $todayYear);
+                $hasAttendance = !$employeeInfo['attendance_missing'];
+
+                if ($status !== 'RDO' && $status !== 'LEAVE' && $status !== 'CONVERT') {
+                    if ($isToday && !$hasAttendance) {
+                        $shiftTimeRaw = $employeeInfo['shift_time'];
+                        if (preg_match('/^(\d{2})(\d{2})$/', $shiftTimeRaw, $m)) {
+                            $shiftHour = (int)$m[1];
+                            $shiftMin = (int)$m[2];
+                            $shiftStart = new DateTime($now->format('Y-m-d') . sprintf(' %02d:%02d:00', $shiftHour, $shiftMin), new DateTimeZone('Australia/Sydney'));
+                            $shiftStart->modify('+30 minutes');
+                            if ($now >= $shiftStart) {
+                                $ulwpCopy = $employeeInfo;
+                                $ulwpCopy['status'] = 'ULWP';
+                                $dayData[$day]['ulwp'][] = $ulwpCopy;
+                            }
+                        } else {
+                            $shiftStart = new DateTime($now->format('Y-m-d') . ' 08:00:00', new DateTimeZone('Australia/Sydney'));
+                            if ($now >= $shiftStart) {
+                                $ulwpCopy = $employeeInfo;
+                                $ulwpCopy['status'] = 'ULWP';
+                                $dayData[$day]['ulwp'][] = $ulwpCopy;
+                            }
+                        }
+                    } elseif (!$isToday && !$hasAttendance) {
+                        $ulwpCopy = $employeeInfo;
+                        $ulwpCopy['status'] = 'ULWP';
+                        $dayData[$day]['ulwp'][] = $ulwpCopy;
+                    }
+                }
+            }
+        }
+
         ?>
 
         <!-- Header -->
         <br><br><br>
-        <h1 class="text-center mb-3 display-3">Team Roster – <?php echo "$displayMonthName $yearToShow"; ?></h1>
+        <h1 class="text-center mb-3 display-3">Team Roster ï¿½ <?php echo "$displayMonthName $yearToShow"; ?></h1>
 
         <!-- View Toggle Buttons -->
         <div class="text-center mb-4 view-toggle">

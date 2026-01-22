@@ -1,176 +1,181 @@
 <?php
-ini_set('display_errors', '1');
-ini_set('display_startup_errors', '1');
-error_reporting(E_ALL);
+/**
+ * Template Name: Quote Price Check
+ * Template Post Type: post, page
+ *
+ * @package WordPress
+ * @subpackage Twenty_Twenty
+ * @since Twenty Twenty 1.0
+ */
 
-require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
-global $wpdb;
-echo 'updated';
+// Load WordPress if not already loaded
+if (!function_exists('get_header')) {
+    require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+}
 
-// Get the quote within last 7 days
-$results = $wpdb->get_results("
-    SELECT * FROM wpk4_quote
-    WHERE quoted_at >= NOW() - INTERVAL 2 DAY
-    AND depart_date >= CURDATE()
-    AND status = 0
-    ORDER BY quoted_at DESC
-");
+get_header();
+?>
+<div class='wpb_column vc_column_container vc_col-sm-12' id='quote_price_check' style='width:95%;margin:auto;padding:100px 0px;'>
+<?php
 
-// The URL of PHP handlers
-$handlerUrl = 'https://ai.gauratravel.com.au/app/v3/phpend/fetch_flight_data_round_trip_v1.php'; 
-$postUrl = 'https://ai.gauratravel.com.au/app/v3/apis/api_ypsilon_flights_roundtrip_v1.php';
-$getBaseUrl = 'https://ai.gauratravel.com.au/app/v3/db/db_flights_query_roundtrip_v2.php';
+// API Configuration
+if (defined('API_BASE_URL')) {
+    $base_url = API_BASE_URL;
+} else {
+    $base_url = 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1';
+}
 
-// If there are quotes found
-if (!empty($results)){
-    foreach ($results as $row) {
-        // initialise the trip type
-        $trip_type = "oneway";
-        $dmyDepartDate = date('d-m-Y', strtotime($row->depart_date));
-        $dmyReturnDate = "";
+echo "<h2>Quote Price Check</h2>";
+
+// Get days parameter from URL or use default
+$days = isset($_GET['days']) ? (int)$_GET['days'] : 28;
+
+// Call the endpoint to get recent quotes
+$apiUrl = rtrim($base_url, '/') . '/quote-price-check/recent?days=' . $days;
+
+$ch = curl_init($apiUrl);
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPGET => true,
+    CURLOPT_HTTPHEADER => [
+        'Content-Type: application/json',
+        'Accept: application/json'
+    ],
+    CURLOPT_TIMEOUT => 30,
+    CURLOPT_SSL_VERIFYPEER => false
+]);
+
+$apiResponse = curl_exec($ch);
+$curlError = curl_error($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+// Handle errors
+if ($curlError) {
+    echo "<div style='padding: 15px; background-color: #f8d7da; border: 1px solid #dc3545; color: #721c24; border-radius: 5px; margin: 20px 0;'>";
+    echo "<strong>Error:</strong> cURL Error - " . htmlspecialchars($curlError);
+    echo "</div>";
+} elseif ($httpCode !== 200) {
+    echo "<div style='padding: 15px; background-color: #f8d7da; border: 1px solid #dc3545; color: #721c24; border-radius: 5px; margin: 20px 0;'>";
+    echo "<strong>Error:</strong> HTTP Status Code {$httpCode}";
+    echo "<pre style='margin-top: 10px; background: #fff; padding: 10px; border-radius: 3px;'>" . htmlspecialchars(substr($apiResponse, 0, 500)) . "</pre>";
+    echo "</div>";
+} else {
+    $responseData = json_decode($apiResponse, true);
+    
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        echo "<div style='padding: 15px; background-color: #f8d7da; border: 1px solid #dc3545; color: #721c24; border-radius: 5px; margin: 20px 0;'>";
+        echo "<strong>Error:</strong> JSON Decode Error - " . json_last_error_msg();
+        echo "</div>";
+    } elseif (isset($responseData['status']) && $responseData['status'] === 'success') {
+        $data = $responseData['data'] ?? [];
+        $quotes = $data['quotes'] ?? [];
+        $totalCount = $data['total_count'] ?? count($quotes);
+        $daysBack = $data['days_back'] ?? $days;
         
-        // if the return date is present set trip type to round trip
-        if ($row->return_date !== '0000-00-00' && !empty($row->return_date)){
-            $dmyReturnDate = date('d-m-Y', strtotime($row->return_date));
-            $trip_type = "roundtrip";
+        // Debug: Show API response structure (can be removed later)
+        if (isset($_GET['debug'])) {
+            echo "<div style='padding: 15px; background-color: #e7f3ff; border: 1px solid #0066cc; color: #004085; border-radius: 5px; margin: 20px 0;'>";
+            echo "<h4>Debug Info:</h4>";
+            echo "<p><strong>API URL:</strong> " . htmlspecialchars($apiUrl) . "</p>";
+            echo "<p><strong>HTTP Code:</strong> {$httpCode}</p>";
+            echo "<details style='margin-top: 10px;'>";
+            echo "<summary style='cursor: pointer;'><strong>Raw API Response:</strong></summary>";
+            echo "<pre style='background: #fff; padding: 10px; border-radius: 3px; max-height: 400px; overflow: auto;'>" . htmlspecialchars($apiResponse) . "</pre>";
+            echo "</details>";
+            echo "<details style='margin-top: 10px;'>";
+            echo "<summary style='cursor: pointer;'><strong>Parsed Response Data:</strong></summary>";
+            echo "<pre style='background: #fff; padding: 10px; border-radius: 3px; max-height: 400px; overflow: auto;'>" . htmlspecialchars(print_r($responseData, true)) . "</pre>";
+            echo "</details>";
+            echo "<p><strong>Quotes Array Count:</strong> " . count($quotes) . "</p>";
+            echo "<p><strong>Data Keys:</strong> " . implode(', ', array_keys($data)) . "</p>";
+            echo "</div>";
         }
         
-        // params for gdeals
-        $params = [
-            'type'     => $trip_type,
-            'class'    => 'E',
-            'adt'      => $row->adult_count,
-            'chd'      => $row->child_count,
-            'inf'      => $row->infant_count,
-            'depdate1' => $dmyDepartDate,
-            'retdate1' => $dmyReturnDate,
-            'depapt1'  => $row->depart_apt,
-            'dstapt1'  => $row->dest_apt
-        ];
+        // Display summary
+        echo "<div style='padding: 15px; background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724; border-radius: 5px; margin: 20px 0;'>";
+        echo "<h3 style='margin-top: 0;'>Summary</h3>";
+        echo "<p><strong>Total Quotes Found:</strong> {$totalCount}</p>";
+        echo "<p><strong>Days Back:</strong> {$daysBack}</p>";
+        echo "<p><small style='color: #666;'>Query Criteria: quoted_at >= NOW() - INTERVAL {$daysBack} DAY AND depart_date >= CURDATE() AND status = 0</small></p>";
+        echo "<p><small><a href='?days={$days}&debug=1' style='color: #0066cc;'>Show Debug Info</a></small></p>";
+        echo "</div>";
         
-        // Build final URL 
-        $final_get_url = $getBaseUrl . '?' . http_build_query($params);
-        
-        $return_date = '';
-        if ($row->return_date !== '0000-00-00' && !empty($row->return_date)){
-            $return_date = $row->return_date;
-        }
-        
-        // Prepare data to send
-        $postData = [
-            'tripType'    => $trip_type,
-            'depDate'     => $row->depart_date,
-            'depApt'      => $row->depart_apt,
-            'dstDate'     => $return_date,
-            'dstApt'      => $row->dest_apt,
-            'travelClass' => 'E',
-            'limit'       => '1',
-            'offset'      => '0',
-            'getUrl'      => $final_get_url,
-            'postUrl'     => $postUrl
-        ];
-        
-        $ch = curl_init($handlerUrl);
-
-        // Set cURL options
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => http_build_query($postData),
-        ]);
-        
-        // Execute the request
-        $response = curl_exec($ch);
-        echo print_r($response);
-        // Decode the repsonse to json format
-        $responseData = json_decode($response, true);
-        
-        // Get the first flight
-        $flight =  $responseData['data']['flights'][0] ?? '';
-        
-        // lowest price
-        $newPrice = $flight["base"]["basePrice"] ?? '';
-        
-        // trip type (gdeal or fit(ypsilon)?)
-        $tripType = $flight["tripType"] ?? '';
-        
-        $productIdTo = '';
-        $productIdReturn = '';
-        // is gdeals?
-        $isGdeal = 0;
-        if ($tripType == 'gdeal'){
-            $isGdeal = 1;
-            // product id (to)
-            $productIdTo = $flight['oneway'][0]['flightId'];
+        // Display quotes table
+        if (!empty($quotes)) {
+            echo "<h3>Quotes</h3>";
+            echo "<table style='width: 100%; border-collapse: collapse; margin: 20px 0; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>";
+            echo "<thead>";
+            echo "<tr style='background-color: #f8f9fa;'>";
+            echo "<th style='border: 1px solid #dee2e6; padding: 12px; text-align: left;'>ID</th>";
+            echo "<th style='border: 1px solid #dee2e6; padding: 12px; text-align: left;'>Route</th>";
+            echo "<th style='border: 1px solid #dee2e6; padding: 12px; text-align: left;'>Depart Date</th>";
+            echo "<th style='border: 1px solid #dee2e6; padding: 12px; text-align: left;'>Return Date</th>";
+            echo "<th style='border: 1px solid #dee2e6; padding: 12px; text-align: left;'>Current Price</th>";
+            echo "<th style='border: 1px solid #dee2e6; padding: 12px; text-align: left;'>Passengers</th>";
+            echo "<th style='border: 1px solid #dee2e6; padding: 12px; text-align: left;'>Quoted At</th>";
+            echo "<th style='border: 1px solid #dee2e6; padding: 12px; text-align: left;'>Status</th>";
+            echo "</tr>";
+            echo "</thead>";
+            echo "<tbody>";
             
-            // product id (return)
-            $productIdReturn = !empty($flight['return']) ? $flight['return'][0]['flightId'] : '';
-        }
-        
-        if (!empty($newPrice)) {
-            $newPrice = (float) $newPrice;
-            $currentPrice = (float) $row->current_price;
-            
-            $existing = $wpdb->get_var(
-                $wpdb->prepare(
-                    "SELECT COUNT(*) 
-                    FROM wpk4_quote_G360 
-                    WHERE original_quote_id = %d 
-                      AND ABS(current_price - %f) < 0.01;",
-                    $row->id,
-                    $newPrice
-                )
-            );
-            // if the new price is lower than current price and no same price is present
-            if ($existing == 0 && $newPrice < $currentPrice) {
-                $inert_result = $wpdb->insert(
-                    'wpk4_quote_G360',
-                    [
-                        'original_quote_id' => $row->id,
-                        'depart_apt'    => $row->depart_apt,
-                        'dest_apt'      => $row->dest_apt,
-                        'current_price' => $newPrice,
-                        'depart_date'   => $row->depart_date,
-                        'return_date'   => $row->return_date,
-                        'user_id'       => $row->user_id,
-                        'name'          => $row->name,
-                        'email'         => $row->email,
-                        'phone_num'     => $row->phone_num,
-                        'tsr'           => $row->tsr,
-                        'call_record_id'=> $row->call_record_id,
-                        'to_product_id' => $productIdTo,
-                        'return_product_id' => $productIdReturn,
-                        'url'           => $row->url,
-                        'adult_count'   => $row->adult_count,
-                        'child_count'   => $row->child_count,
-                        'infant_count'  => $row->infant_count,
-                        'total_pax'     => $row->total_pax,
-                        'is_gdeals'     => $isGdeal
-                        ],
-                    [
-                        '%d', // original_quote_id
-                        '%s', // depart_apt
-                        '%s', // dest_apt
-                        '%f', // current_price
-                        '%s', // depart_date
-                        '%s', // return_date
-                        '%d', // user_id
-                        '%s', // name
-                        '%s', // email
-                        '%s', // phone_num
-                        '%s', // tsr
-                        '%d', // call_record_id
-                        '%d', // to_product_id
-                        '%d', // return_product_id
-                        '%s', // url
-                        '%d', // adult_count
-                        '%d', // child_count
-                        '%d', // infant_count
-                        '%d', // total_pax
-                        '%d'  // is_gdeals
-                        ]
-                    );
+            foreach ($quotes as $quote) {
+                $quoteId = $quote['id'] ?? $quote['quote_id'] ?? 'N/A';
+                $departApt = htmlspecialchars($quote['depart_apt'] ?? 'N/A');
+                $destApt = htmlspecialchars($quote['dest_apt'] ?? 'N/A');
+                $departDate = htmlspecialchars($quote['depart_date'] ?? 'N/A');
+                $returnDateValue = $quote['return_date'] ?? '';
+                $returnDate = ($returnDateValue === '0000-00-00' || empty($returnDateValue)) ? 'N/A' : htmlspecialchars($returnDateValue);
+                $currentPrice = isset($quote['current_price']) ? '₹' . number_format((float)$quote['current_price'], 2) : 'N/A';
+                $adultCount = $quote['adult_count'] ?? 0;
+                $childCount = $quote['child_count'] ?? 0;
+                $infantCount = $quote['infant_count'] ?? 0;
+                $totalPax = $quote['total_pax'] ?? ($adultCount + $childCount + $infantCount);
+                $quotedAt = htmlspecialchars($quote['quoted_at'] ?? 'N/A');
+                $status = $quote['status'] ?? 0;
+                $statusText = $status == 0 ? '<span style="color: orange;">Pending</span>' : '<span style="color: green;">Checked</span>';
+                
+                echo "<tr>";
+                echo "<td style='border: 1px solid #dee2e6; padding: 12px;'>{$quoteId}</td>";
+                echo "<td style='border: 1px solid #dee2e6; padding: 12px;'><strong>{$departApt}</strong> → <strong>{$destApt}</strong></td>";
+                echo "<td style='border: 1px solid #dee2e6; padding: 12px;'>{$departDate}</td>";
+                echo "<td style='border: 1px solid #dee2e6; padding: 12px;'>{$returnDate}</td>";
+                echo "<td style='border: 1px solid #dee2e6; padding: 12px;'><strong>{$currentPrice}</strong></td>";
+                echo "<td style='border: 1px solid #dee2e6; padding: 12px;'>";
+                echo "Adults: {$adultCount}";
+                if ($childCount > 0) echo ", Children: {$childCount}";
+                if ($infantCount > 0) echo ", Infants: {$infantCount}";
+                echo " <br><small>(Total: {$totalPax})</small>";
+                echo "</td>";
+                echo "<td style='border: 1px solid #dee2e6; padding: 12px;'>{$quotedAt}</td>";
+                echo "<td style='border: 1px solid #dee2e6; padding: 12px;'>{$statusText}</td>";
+                echo "</tr>";
             }
+            
+            echo "</tbody>";
+            echo "</table>";
+        } else {
+            echo "<div style='padding: 15px; background-color: #fff3cd; border: 1px solid #ffc107; color: #856404; border-radius: 5px; margin: 20px 0;'>";
+            echo "<strong>No quotes found</strong> for the last {$daysBack} days.";
+            echo "</div>";
         }
+        
+        // Display message if available
+        if (isset($responseData['message'])) {
+            echo "<p style='margin-top: 20px; color: #28a745;'><strong>{$responseData['message']}</strong></p>";
+        }
+                } else {
+        echo "<div style='padding: 15px; background-color: #f8d7da; border: 1px solid #dc3545; color: #721c24; border-radius: 5px; margin: 20px 0;'>";
+        echo "<strong>Error:</strong> " . ($responseData['message'] ?? 'Unknown error');
+        if (isset($responseData['errors'])) {
+            echo "<pre style='margin-top: 10px; background: #fff; padding: 10px; border-radius: 3px;'>" . htmlspecialchars(print_r($responseData['errors'], true)) . "</pre>";
+        }
+        echo "</div>";
     }
 }
+
+echo "<hr>";
+echo "<p><strong>Data retrieved from API endpoint.</strong></p>";
+?>
+</div>
+<?php get_footer(); ?>

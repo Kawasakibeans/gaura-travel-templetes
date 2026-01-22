@@ -13,6 +13,7 @@ get_header();
 
 
 $quote_id = intval($_GET['quote_id']);
+
 global $wpdb;
 
 // Get main quote

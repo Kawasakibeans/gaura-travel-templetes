@@ -8,6 +8,188 @@
  * @since Twenty Twenty 1.0
  */
 
+require_once($_SERVER['DOCUMENT_ROOT'].'/wp-load.php');
+
+date_default_timezone_set("Australia/Melbourne");
+error_reporting(E_ALL);
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1';
+
+global $wpdb, $current_user;
+
+wp_get_current_user();
+
+// Helper function for passenger key normalization
+if (!function_exists('normalize_passenger_key')) {
+    function normalize_passenger_key($name) {
+        $key = sanitize_title($name);
+        return strtolower(trim($key));
+    }
+}
+
+// Check if this is an API request
+$is_api_request = false;
+$request_uri = $_SERVER['REQUEST_URI'] ?? '';
+$path = parse_url($request_uri, PHP_URL_PATH);
+$path_parts = array_filter(explode('/', trim($path, '/')));
+$path_parts = array_values($path_parts);
+
+// Check if path contains API indicators
+for ($i = 0; $i < count($path_parts); $i++) {
+    if ($path_parts[$i] === 'user-portal' && isset($path_parts[$i + 1]) && $path_parts[$i + 1] === 'requests') {
+        if (isset($path_parts[$i + 2]) && is_numeric($path_parts[$i + 2])) {
+            if (isset($path_parts[$i + 3]) && $path_parts[$i + 3] === 'meta' && 
+                isset($path_parts[$i + 4]) && $path_parts[$i + 4] === 'bulk') {
+                $is_api_request = true;
+                break;
+            }
+        }
+    }
+}
+
+// If API request, handle it and exit
+if ($is_api_request) {
+    header('Content-Type: application/json');
+    
+    // Helper functions
+    function sendResponse($status, $data = null, $message = null, $code = 200) {
+        http_response_code($code);
+        echo json_encode([
+            'status' => $status,
+            'data' => $data,
+            'message' => $message
+        ]);
+        exit;
+    }
+    
+    function sendError($message, $code = 500) {
+        sendResponse('error', null, $message, $code);
+    }
+    
+    $method = $_SERVER['REQUEST_METHOD'];
+    
+    // Extract case_id from path
+    $case_id = null;
+    for ($i = 0; $i < count($path_parts); $i++) {
+        if ($path_parts[$i] === 'requests' && isset($path_parts[$i + 1]) && is_numeric($path_parts[$i + 1])) {
+            $case_id = intval($path_parts[$i + 1]);
+            break;
+        }
+    }
+    
+    try {
+        // POST /v1/user-portal/requests/{case_id}/meta/bulk - Bulk update request meta
+        if ($method === 'POST' && $case_id !== null) {
+            if ($case_id <= 0) {
+                sendError('Invalid case_id', 400);
+            }
+            
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            if (empty($input['data']) || !is_array($input['data'])) {
+                sendError('data field is required and must be an object', 400);
+            }
+            
+            $data = $input['data'];
+            $T = $wpdb->prefix . 'backend_user_portal_request_meta';
+            
+            // Which per-passenger fields we accept
+            $allowed = [
+                'passenger_paid' => 'money',
+                'cancellation_fee' => 'money',
+                'refund_amount' => 'money',
+                'refund_received_from_airline' => 'money',
+                'diff' => 'money',
+                'account_name' => 'text',
+                'bsb' => 'text',
+                'account_number' => 'text',
+                'refund_received_date' => 'date',
+                'vendor' => 'text',
+                'booking_type' => 'text',
+                'remarks' => 'text',
+                'submitted_date' => 'date',
+            ];
+            
+            $updated_count = 0;
+            $errors = [];
+            
+            foreach ($data as $passenger_key => $fields) {
+                $pkey = normalize_passenger_key((string)$passenger_key);
+                if ($pkey === '' || !is_array($fields)) {
+                    continue;
+                }
+                
+                foreach ($fields as $field => $raw) {
+                    if (!isset($allowed[$field])) {
+                        continue; // ignore unknowns
+                    }
+                    
+                    $type = $allowed[$field];
+                    $val = (string)$raw;
+                    
+                    // Sanitize by type
+                    if ($type === 'money') {
+                        $val = str_replace(',', '.', $val);
+                        $val = preg_replace('/[^0-9.\-]/', '', $val);
+                        if ($val === '' || $val === '-' || $val === '.') {
+                            $val = '0';
+                        }
+                        $val = number_format((float)$val, 2, '.', '');
+                    } elseif ($type === 'date') {
+                        $ts = strtotime($val);
+                        $val = $ts ? date('Y-m-d', $ts) : '';
+                    } else { // text
+                        $val = sanitize_text_field($val);
+                    }
+                    
+                    // Compose meta_key exactly like the rest of your code does:
+                    // e.g. refund_amount--john-doe
+                    $meta_key = strtolower(trim($field . '--' . $pkey));
+                    
+                    // Upsert (requires UNIQUE(case_id, meta_key))
+                    // Original Query:
+                    // INSERT INTO wpk4_backend_user_portal_request_meta (case_id, meta_key, meta_value)
+                    // VALUES (:case_id, :meta_key, :meta_value)
+                    // ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)
+                    
+                    $sql = "
+                        INSERT INTO `$T` (case_id, meta_key, meta_value)
+                        VALUES (%d, %s, %s)
+                        ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)
+                    ";
+                    
+                    $result = $wpdb->query($wpdb->prepare($sql, $case_id, $meta_key, $val));
+                    
+                    if ($result !== false) {
+                        $updated_count++;
+                    } else {
+                        $errors[] = "Failed to update meta_key '$meta_key' for case_id $case_id: " . $wpdb->last_error;
+                    }
+                }
+            }
+            
+            if ($updated_count === 0 && !empty($errors)) {
+                sendError('No fields were updated. Errors: ' . implode('; ', $errors), 400);
+            }
+            
+            sendResponse('success', [
+                'case_id' => $case_id,
+                'updated_count' => $updated_count,
+                'errors' => $errors
+            ], "Bulk update completed. Updated $updated_count meta field(s).");
+        }
+        
+        // Route not found
+        sendError('Endpoint not found', 404);
+        
+    } catch (Exception $e) {
+        sendError($e->getMessage(), $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500);
+    }
+}
+
+// Continue with original template code for HTML output
 if (isset($_POST['bulk_edit'])) { 
     // Nonce check (must match what you add in JS: wp_create_nonce("bulk_edit_refund"))
     if (empty($_POST['_wpnonce_bulk_edit']) || !wp_verify_nonce($_POST['_wpnonce_bulk_edit'], 'bulk_edit_refund')) {
@@ -29194,5 +29376,73 @@ if(isset($_GET['p']) && $_GET['p'] =='refund-print-view') //admin dashboard
 	</br></br>
 	</div>
 <?php 
+/**
+ * ============================================
+ * POSTMAN TEST EXAMPLES
+ * ============================================
+ * 
+ * 1. Bulk Update Request Meta
+ *    Method: POST
+ *    URL: {{base_url}}/v1/user-portal/requests/123/meta/bulk
+ *    Description: Bulk updates metadata for a user portal request (used for refund passenger details)
+ * 
+ *    Path Parameter:
+ *      - case_id: 123 (required, numeric)
+ * 
+ *    Body (JSON):
+ *      {
+ *        "data": {
+ *          "John Doe": {
+ *            "passenger_paid": "500.00",
+ *            "cancellation_fee": "50.00",
+ *            "refund_amount": "450.00",
+ *            "refund_received_from_airline": "450.00",
+ *            "diff": "0.00",
+ *            "account_name": "John Doe",
+ *            "bsb": "123456",
+ *            "account_number": "12345678",
+ *            "refund_received_date": "2025-01-15",
+ *            "vendor": "Airline",
+ *            "booking_type": "FIT",
+ *            "remarks": "Refund processed",
+ *            "submitted_date": "2025-01-10"
+ *          },
+ *          "Jane Smith": {
+ *            "passenger_paid": "300.00",
+ *            "refund_amount": "300.00",
+ *            "account_name": "Jane Smith"
+ *          }
+ *        }
+ *      }
+ * 
+ *    Allowed Fields:
+ *      - passenger_paid (money)
+ *      - cancellation_fee (money)
+ *      - refund_amount (money)
+ *      - refund_received_from_airline (money)
+ *      - diff (money)
+ *      - account_name (text)
+ *      - bsb (text)
+ *      - account_number (text)
+ *      - refund_received_date (date)
+ *      - vendor (text)
+ *      - booking_type (text)
+ *      - remarks (text)
+ *      - submitted_date (date)
+ * 
+ *    Response:
+ *    {
+ *      "status": "success",
+ *      "data": {
+ *        "case_id": 123,
+ *        "updated_count": 14,
+ *        "errors": []
+ *      },
+ *      "message": "Bulk update completed. Updated 14 meta field(s)."
+ *    }
+ * 
+ *    Note: The meta_key format is: {field}--{normalized_passenger_key}
+ *          Example: refund_amount--john-doe
+ */
 get_footer();
 ?>

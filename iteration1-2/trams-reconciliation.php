@@ -4,18 +4,59 @@ ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 date_default_timezone_set('Australia/Melbourne');
 
-define('DB_HOST', 'localhost');
-define('DB_USER', 'gaurat_sriharan');
-define('DB_PASS', 'r)?2lc^Q0cAE');
-define('DB_NAME', 'gaurat_gauratravel');
+$wpConfig = dirname(__FILE__, 5) . '/wp-config.php';
+if (file_exists($wpConfig)) {
+    require_once $wpConfig;
+}
 
-function db(): mysqli {
-    static $cx = null;
-    if ($cx instanceof mysqli) return $cx;
-    $cx = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
-    if ($cx->connect_error) die('DB connection error');
-    $cx->set_charset('utf8mb4');
-    return $cx;
+if (!defined('API_BASE_URL')) {
+    throw new RuntimeException('API_BASE_URL is not defined');
+}
+
+$apiBaseUrl = API_BASE_URL;
+
+function call_trams_reconciliation_api(array $query = []): array {
+    global $apiBaseUrl;
+
+    $url = rtrim($apiBaseUrl, '/') . '/trams-reconciliation';
+    if (!empty($query)) {
+        $url .= '?' . http_build_query($query);
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_HTTPHEADER => [
+            'Accept: application/json',
+        ],
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlError) {
+        throw new RuntimeException('API request failed: ' . $curlError);
+    }
+
+    if ($httpCode < 200 || $httpCode >= 300) {
+        throw new RuntimeException('API request failed with status ' . $httpCode);
+    }
+
+    $decoded = json_decode($response, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new RuntimeException('Invalid API response: ' . json_last_error_msg());
+    }
+
+    if (($decoded['status'] ?? '') !== 'success') {
+        $message = $decoded['message'] ?? 'Unknown API error';
+        throw new RuntimeException($message);
+    }
+
+    return $decoded['data'] ?? [];
 }
 
 function csv_safe($v) {
@@ -24,112 +65,41 @@ function csv_safe($v) {
     return $v;
 }
 function h($v){ return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
-function num($v){ return is_numeric($v) ? (float)$v : 0.0; }
 function fmtMoney($v){
-    if (!is_numeric($v)) return '';
+    if ($v === '' || $v === null) return '';
+    if (!is_numeric($v)) return (string)$v;
     return number_format((float)$v, 2, '.', '');
 }
 
 $start = trim($_GET['start_date'] ?? '');
 $end   = trim($_GET['end_date'] ?? '');
-if ($start==='' || $end==='') {
+if ($start === '' || $end === '') {
     $start = date('Y-m-01');
     $end   = date('Y-m-t');
 }
 $reportName = trim($_GET['report'] ?? 'trams_g360_match');
+$filterType = trim($_GET['filter'] ?? 'all') ?: 'all';
 
-$mysqli = db();
-
-/* Subqueries filtered by date */
-$tSub = "
-  SELECT invoicelink_no, order_amnt, net_due
-  FROM wpk4_backend_trams_booking_invoice_reconciliation
-  WHERE ISSUEDATE BETWEEN ? AND ?
-";
-$gSub = "
-  SELECT Invoicelink_no, order_amnt, transaction_amount_inr AS net_due
-  FROM wpk4_backend_ticket_reconciliation
-  WHERE issue_date BETWEEN ? AND ?
-";
-
-/* 1) invoicelink_no match */
-$sqlMatches = "
-  SELECT 
-    t.invoicelink_no AS invoicelink_no_trams,
-    t.order_amnt     AS order_amnt_trams,
-    t.net_due        AS net_due_trams,
-    g.Invoicelink_no AS invoicelink_no_g360,
-    g.order_amnt     AS order_amnt_g360,
-    g.net_due        AS net_due_g360
-  FROM ($tSub) AS t
-  INNER JOIN ($gSub) AS g
-    ON t.invoicelink_no = g.Invoicelink_no
-";
-$stmt = $mysqli->prepare($sqlMatches);
-$stmt->bind_param('ssss', $start, $end, $start, $end);
-$stmt->execute();
-$matches = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
-
-/* 2) TRAMS only */
-$sqlTramsOnly = "
-  SELECT 
-    t.invoicelink_no AS invoicelink_no_trams,
-    t.order_amnt     AS order_amnt_trams,
-    t.net_due        AS net_due_trams,
-    NULL             AS invoicelink_no_g360,
-    NULL             AS order_amnt_g360,
-    NULL             AS net_due_g360
-  FROM ($tSub) AS t
-  LEFT JOIN ($gSub) AS g
-    ON t.invoicelink_no = g.Invoicelink_no
-  WHERE g.Invoicelink_no IS NULL
-";
-$stmt = $mysqli->prepare($sqlTramsOnly);
-$stmt->bind_param('ssss', $start, $end, $start, $end);
-$stmt->execute();
-$tramsOnly = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
-
-/* 3) G360 only */
-$sqlGOnly = "
-  SELECT 
-    NULL             AS invoicelink_no_trams,
-    NULL             AS order_amnt_trams,
-    NULL             AS net_due_trams,
-    g.Invoicelink_no AS invoicelink_no_g360,
-    g.order_amnt     AS order_amnt_g360,
-    g.net_due        AS net_due_g360
-  FROM ($gSub) AS g
-  LEFT JOIN ($tSub) AS t
-    ON t.invoicelink_no = g.Invoicelink_no
-  WHERE t.invoicelink_no IS NULL
-";
-$stmt = $mysqli->prepare($sqlGOnly);
-$stmt->bind_param('ssss', $start, $end, $start, $end);
-$stmt->execute();
-$gOnly = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
-
-/* Merge */
-$rows = array_merge($matches, $tramsOnly, $gOnly);
-
-/* Compute diffs */
-foreach ($rows as &$r) {
-    $amtT = num($r['order_amnt_trams'] ?? 0);
-    $amtG = num($r['order_amnt_g360'] ?? 0);
-    $netT = num($r['net_due_trams'] ?? 0);
-    $netG = num($r['net_due_g360'] ?? 0);
-
-    $r['order_amnt_trams'] = $amtT;
-    $r['order_amnt_g360']  = $amtG;
-    $r['order_amnt_diff']  = $amtG - $amtT;
-
-    $r['net_due_trams'] = $netT;
-    $r['net_due_g360']  = $netG;
-    $r['net_due_diff']  = $netG - $netT;
+try {
+    $apiPayload = call_trams_reconciliation_api([
+        'start_date' => $start,
+        'end_date' => $end,
+        'filter' => $filterType,
+    ]);
+} catch (Throwable $e) {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'Failed to load TRAMS reconciliation data: ' . $e->getMessage();
+    exit;
 }
-unset($r);
+
+$rows = $apiPayload['data'] ?? [];
+$summary = $apiPayload['summary'] ?? [
+    'matched' => 0,
+    'mismatched' => 0,
+    'trams_only' => 0,
+    'g360_only' => 0,
+];
+$totalRecords = $apiPayload['total_records'] ?? count($rows);
 
 /* CSV Export */
 if (isset($_GET['export']) && $_GET['export']==='1') {
@@ -146,13 +116,13 @@ if (isset($_GET['export']) && $_GET['export']==='1') {
     foreach ($rows as $r) {
         fputcsv($out, [
             csv_safe($r['invoicelink_no_trams'] ?? ''),
-            csv_safe(fmtMoney($r['order_amnt_trams'])),
-            csv_safe(fmtMoney($r['net_due_trams'])),
+            csv_safe(fmtMoney($r['order_amnt_trams'] ?? '')),
+            csv_safe(fmtMoney($r['net_due_trams'] ?? '')),
             csv_safe($r['invoicelink_no_g360'] ?? ''),
-            csv_safe(fmtMoney($r['order_amnt_g360'])),
-            csv_safe(fmtMoney($r['net_due_g360'])),
-            csv_safe(fmtMoney($r['order_amnt_diff'])),
-            csv_safe(fmtMoney($r['net_due_diff'])),
+            csv_safe(fmtMoney($r['order_amnt_g360'] ?? '')),
+            csv_safe(fmtMoney($r['net_due_g360'] ?? '')),
+            csv_safe(fmtMoney($r['order_amnt_diff'] ?? '')),
+            csv_safe(fmtMoney($r['net_due_diff'] ?? '')),
         ]);
     }
     fclose($out); exit;
@@ -179,14 +149,21 @@ tbody tr:hover{background:#fafafa}
 </style>
 </head>
 <body>
-<h1><?=h($reportName)?> — Match by <code>invoicelink_no</code> only</h1>
+<h1><?=h($reportName)?> — Match by <code>invoicelink_no</code> only (<?=h((string)$totalRecords)?> rows)</h1>
 <form method="get">
   <div><label>Report</label><input type="text" name="report" value="<?=h($reportName)?>"></div>
   <div><label>Start date</label><input type="date" name="start_date" value="<?=h($start)?>"></div>
   <div><label>End date</label><input type="date" name="end_date" value="<?=h($end)?>"></div>
+  <input type="hidden" name="filter" value="<?=h($filterType)?>">
   <div><button type="submit">Filter</button></div>
   <div><?php
-    $qs = ['report'=>$reportName,'start_date'=>$start,'end_date'=>$end,'export'=>'1'];
+    $qs = [
+        'report'=>$reportName,
+        'start_date'=>$start,
+        'end_date'=>$end,
+        'filter'=>$filterType,
+        'export'=>'1'
+    ];
     $href = h($_SERVER['PHP_SELF'].'?'.http_build_query($qs));
   ?><a class="btn" href="<?=$href?>">Export CSV</a></div>
 </form>

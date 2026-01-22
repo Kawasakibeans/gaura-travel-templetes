@@ -3,102 +3,108 @@ date_default_timezone_set("Australia/Melbourne");
 ini_set('display_errors', '1');
 ini_set('display_startup_errors', '1');
 error_reporting(E_ALL);
-// Create the POST data string
 
-$mysqli = new mysqli('localhost', 'gaurat_sriharan', 'r)?2lc^Q0cAE', 'gaurat_gauratravel');
+// Load WordPress to get API_BASE_URL constant from wp-config.php
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
 
-// Check connection
-if ($mysqli->connect_error) {
-    die("Connection failed: " . $mysqli->connect_error);
+// Get API base URL (should be defined in wp-config.php)
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1';
+
+// Helper function to call API
+function callAPI($url, $method = 'GET', $data = null) {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    
+    if ($method === 'POST') {
+        curl_setopt($ch, CURLOPT_POST, true);
+        if ($data) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        }
+    }
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+    
+    if ($curlError) {
+        error_log("API call failed: $curlError");
+        return ['error' => $curlError, 'http_code' => $httpCode];
+    }
+    
+    if ($httpCode === 200) {
+        return json_decode($response, true);
+    }
+    
+    error_log("API call returned HTTP $httpCode: " . substr($response, 0, 500));
+    return ['error' => 'HTTP ' . $httpCode, 'response' => $response];
 }
 
 $current_email_date = date("Y-m-d H:i:s");
 
-function availability_pax_update($order_id, $by_user)
-{
-	global $mysqli;
-	$current_date_ymd = date("Y-m-d H:i:s");
-	$query_select_booking = "SELECT order_id, trip_code, travel_date, total_pax FROM wpk4_backend_travel_bookings where order_type = 'WPT' AND order_id='$order_id' ";
-	$result_select_booking = mysqli_query($mysqli, $query_select_booking);
-	while($row_select_booking = mysqli_fetch_assoc($result_select_booking))
-	{
-		$post_trip_code = $row_select_booking['trip_code'];
-		$post_travel_date_int = $row_select_booking['travel_date'];
-		$post_pax = $row_select_booking['total_pax'];
-				
-		$query_get_current_availability_pax = "SELECT pax FROM wpk4_backend_manage_seat_availability where trip_code = '$post_trip_code' AND date(travel_date) = '$post_travel_date_int'";
-		$result_get_current_availability_pax = mysqli_query($mysqli, $query_get_current_availability_pax);
-		$row_get_current_availability_pax = mysqli_fetch_assoc($result_get_current_availability_pax); 
-		$current_availability_pax = $row_get_current_availability_pax['pax'];
-						
-		$new_availability_pax = $current_availability_pax - $post_pax; // reducing the pax count as the booking is being cancelled
-						
-		$updated_by_username = 'auto_cancellation_cron';
-						
-		$sql_update_current_availability_pax = "UPDATE wpk4_backend_manage_seat_availability 
-					SET pax = '$new_availability_pax', pax_updated_by = '$by_user', pax_updated_on = '$current_date_ymd'
-					WHERE trip_code = '$post_trip_code' AND date(travel_date) = '$post_travel_date_int'";
-		$result_update_current_availability_pax = mysqli_query($mysqli, $sql_update_current_availability_pax);
-	}
+// Call API to get all bookings for zero payment cancellation
+$apiUrl = $base_url . '/auto-cancellation/zero-payment';
+$apiResult = callAPI($apiUrl, 'GET');
+
+// Initialize data arrays
+$reminderBookings = [];
+$zeroPayment3HoursBookings = [];
+$fit25HoursBookings = [];
+$bpay96HoursBookings = [];
+
+if ($apiResult && isset($apiResult['status']) && $apiResult['status'] === 'success') {
+    if (isset($apiResult['data'])) {
+        $data = $apiResult['data'];
+        
+        // Extract reminder bookings (query 1)
+        if (isset($data['reminder']['bookings'])) {
+            $reminderBookings = $data['reminder']['bookings'];
+        }
+        
+        // Extract zero payment 3 hours bookings (query 2)
+        if (isset($data['zero_payment_3hours']['bookings'])) {
+            $zeroPayment3HoursBookings = $data['zero_payment_3hours']['bookings'];
+        }
+        
+        // Extract FIT 25 hours bookings (query 3)
+        if (isset($data['fit_25hours']['bookings'])) {
+            $fit25HoursBookings = $data['fit_25hours']['bookings'];
+        }
+        
+        // Extract BPAY 96 hours bookings (query 4)
+        if (isset($data['bpay_96hours']['bookings'])) {
+            $bpay96HoursBookings = $data['bpay_96hours']['bookings'];
+        }
+    }
 }
 
-/* All types reminder email which sents in 20 mins after booking starts. */
-$query = "SELECT 
-    bookings.auto_id, 
-    bookings.order_id, 
-    bookings.order_date, 
-    bookings.travel_date, 
-    bookings.payment_status, 
-    pays.trams_received_amount 
-FROM wpk4_backend_travel_bookings bookings 
-LEFT JOIN wpk4_backend_travel_booking_pax pax 
-    ON bookings.order_id = pax.order_id 
-    AND bookings.co_order_id = pax.co_order_id 
-    AND bookings.product_id = pax.product_id 
-LEFT JOIN wpk4_backend_travel_payment_history pays 
-    ON bookings.order_id = pays.order_id 
-WHERE 
-    bookings.payment_status = 'partially_paid' and bookings.sub_payment_status NOT IN ('BPAY Paid', 'BPAY Received')
-    AND bookings.order_date <= NOW() - INTERVAL 20 MINUTE AND bookings.order_date >= NOW() - INTERVAL 600 MINUTE 
-    AND (pays.order_id IS NULL OR CAST(pays.trams_received_amount AS DECIMAL(10,2)) = '0.00' ) 
-    AND NOT EXISTS (
-        SELECT 1 
-        FROM wpk4_backend_order_email_history email 
-        WHERE email.order_id = bookings.order_id 
-        AND email.email_type = 'Payment reminder'
-    )
-ORDER BY 
-    bookings.auto_id ASC 
-LIMIT 100;
-";
-echo $query;
-$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-$row_counter = mysqli_num_rows($result);
-$processedOrders = array();	
-echo '</br></br>Email remider for GDeals & FIT</br></br>';
+// Section 1: Email reminder (20 minutes to 600 minutes after booking)
+echo '</br></br>Email reminder for GDeals & FIT</br></br>';
 echo '<table><tr><th>Order ID / PNR</th><th>Order Date</th><th>payment</th><th>Travel date</th><th>Payment Status</th><th>Status</th></tr>';
-while($row = mysqli_fetch_assoc($result))
-{
-    $order_id = $row['order_id'];
-    if (in_array($order_id, $processedOrders)) {
-		continue; // Skip to the next iteration if the order ID is already processed
-	}
-	$processedOrders[] = $order_id;
 
-    //include("email/tpl_email_trigger_deposit_reminder.php");
+$processedOrders = [];
+foreach ($reminderBookings as $row) {
+    $order_id = $row['order_id'] ?? '';
+    if (in_array($order_id, $processedOrders)) {
+        continue;
+    }
+    $processedOrders[] = $order_id;
     
-    //mysqli_query($mysqli, "insert into wpk4_backend_order_email_history (order_id, email_type, email_address, initiated_date, initiated_by, email_body, email_subject) 
-    //values ('$order_id','Payment reminder','','$current_email_date','deposit_check_cancellation_cron', '', 'Payment Reminder')") or die(mysqli_error($mysqli));
-	
-    $new_status = 'email sent';
+    // Original file had email sending logic commented out
+    // API handles the business logic, we just display
+    
+    $new_status = $row['new_status'] ?? 'email sent';
     
     echo "<tr>
-        <td>".$row['order_id']."</td>
-        <td>".$row['order_date']."</td>
-        <td>".$row['trams_received_amount']."</td>
-        <td>".$row['travel_date']."</td>
-        <td>".$row['payment_status']."</td>
-        <td>".$new_status."</td>
+        <td>".htmlspecialchars($order_id)."</td>
+        <td>".htmlspecialchars($row['order_date'] ?? '')."</td>
+        <td>".htmlspecialchars($row['trams_received_amount'] ?? '0.00')."</td>
+        <td>".htmlspecialchars($row['travel_date'] ?? '')."</td>
+        <td>".htmlspecialchars($row['payment_status'] ?? '')."</td>
+        <td>".htmlspecialchars($new_status)."</td>
     </tr>";
 }
 echo '</table>';
@@ -106,69 +112,30 @@ echo '</table>';
 
 echo '</br></br></br>';
 
-/* All types cancellation if no payment received in 3 hrs. */
-$query = "SELECT 
-    bookings.auto_id, 
-    bookings.order_id, 
-    bookings.order_date, 
-    bookings.travel_date, 
-    bookings.payment_status, 
-    pays.trams_received_amount 
-FROM wpk4_backend_travel_bookings bookings 
-LEFT JOIN wpk4_backend_travel_booking_pax pax 
-    ON bookings.order_id = pax.order_id 
-    AND bookings.co_order_id = pax.co_order_id 
-    AND bookings.product_id = pax.product_id 
-LEFT JOIN wpk4_backend_travel_payment_history pays 
-    ON bookings.order_id = pays.order_id 
-WHERE 
-    bookings.payment_status = 'partially_paid' and bookings.sub_payment_status NOT IN ('BPAY Paid', 'BPAY Received')
-    AND bookings.order_date <= NOW() - INTERVAL 3 HOUR 
-    AND (pays.order_id IS NULL OR CAST(pays.trams_received_amount AS DECIMAL(10,2)) = '0.00' ) 
-    AND EXISTS (
-        SELECT 1 
-        FROM wpk4_backend_order_email_history email 
-        WHERE email.order_id = bookings.order_id 
-        AND email.email_type = 'Payment reminder'
-    )
-ORDER BY 
-    bookings.auto_id ASC 
-LIMIT 100;
-";
-echo $query;
-$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-$row_counter = mysqli_num_rows($result);
-$processedOrders = array();	
+// Section 2: Zero payment cancellation (3 hours)
 echo '</br></br>Cancellation for GDeals & FIT - zero paid in 3 hrs</br></br>';
 echo '<table><tr><th>Order ID / PNR</th><th>Order Date</th><th>payment</th><th>Travel date</th><th>Payment Status</th><th>Status</th></tr>';
-while($row = mysqli_fetch_assoc($result))
-{
-    $order_id = $row['order_id'];
+
+$processedOrders = [];
+foreach ($zeroPayment3HoursBookings as $row) {
+    $order_id = $row['order_id'] ?? '';
     if (in_array($order_id, $processedOrders)) {
-		continue; // Skip to the next iteration if the order ID is already processed
-	}
-	$processedOrders[] = $order_id;
-	
-    $by_user = 'zeropaid_cancellation_20min';
+        continue;
+    }
+    $processedOrders[] = $order_id;
     
-    //$sql_update_status = "UPDATE wpk4_backend_travel_bookings SET payment_status = 'canceled_zero_payment', payment_modified = '$current_email_date', payment_modified_by = '$by_user' WHERE order_id = '$order_id'";
-	//$result_status = mysqli_query($mysqli,$sql_update_status) or die(mysqli_error());
+    // Original file had cancellation logic commented out
+    // API handles the business logic, we just display
     
-    //mysqli_query($mysqli, "insert into wpk4_backend_order_email_history (order_id, email_type, email_address, initiated_date, initiated_by, email_body, email_subject) 
-    //values ('$order_id','Cancellation','','$current_email_date','$by_user', '', 'Cancellation')") or die(mysqli_error($mysqli));
-    
-	
-	//availability_pax_update($order_id, $by_user);
-	
-    $new_status = 'cancel';
+    $new_status = $row['new_status'] ?? 'cancel';
     
     echo "<tr>
-        <td>".$row['order_id']."</td>
-        <td>".$row['order_date']."</td>
-        <td>".$row['trams_received_amount']."</td>
-        <td>".$row['travel_date']."</td>
-        <td>".$row['payment_status']."</td>
-        <td>".$new_status."</td>
+        <td>".htmlspecialchars($order_id)."</td>
+        <td>".htmlspecialchars($row['order_date'] ?? '')."</td>
+        <td>".htmlspecialchars($row['trams_received_amount'] ?? '0.00')."</td>
+        <td>".htmlspecialchars($row['travel_date'] ?? '')."</td>
+        <td>".htmlspecialchars($row['payment_status'] ?? '')."</td>
+        <td>".htmlspecialchars($new_status)."</td>
     </tr>";
 }
 echo '</table>';
@@ -176,122 +143,60 @@ echo '</table>';
 
 echo '</br></br></br>';
 
-/* FIT cancellation if no payment received after 25 hours starts. */
-$query = "SELECT 
-    bookings.auto_id, 
-    bookings.order_id, 
-    bookings.order_date, 
-    bookings.travel_date, 
-    bookings.payment_status, 
-    COALESCE(pays.trams_received_amount, '0.00') AS trams_received_amount
-FROM wpk4_backend_travel_bookings AS bookings 
-LEFT JOIN wpk4_backend_travel_booking_pax AS pax 
-    ON bookings.order_id = pax.order_id 
-    AND bookings.co_order_id = pax.co_order_id 
-    AND bookings.product_id = pax.product_id 
-LEFT JOIN wpk4_backend_travel_payment_history AS pays 
-    ON bookings.order_id = pays.order_id 
-WHERE 
-    bookings.payment_status = 'partially_paid' and bookings.order_type = 'gds' 
-    AND bookings.sub_payment_status NOT IN ('BPAY Paid', 'BPAY Received')
-    AND bookings.order_date <= NOW() - INTERVAL 25 HOUR
-    AND (pays.order_id IS NULL OR pays.trams_received_amount >= 0.00) 
-ORDER BY 
-    bookings.auto_id ASC 
-LIMIT 100;
-";
-echo $query;
-$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-$row_counter = mysqli_num_rows($result);
-$processedOrders = array();	
+// Section 3: FIT cancellation (25 hours)
 echo '</br></br>Cancellation for FIT - partially paid after 25 hrs</br></br>';
 echo '<table><tr><th>Order ID / PNR</th><th>Order Date</th><th>payment</th><th>Travel date</th><th>Payment Status</th><th>New Payment Status</th></tr>';
-while($row = mysqli_fetch_assoc($result))
-{
-    $order_id = $row['order_id'];
-    if (in_array($order_id, $processedOrders)) {
-		continue; // Skip to the next iteration if the order ID is already processed
-	}
-	$processedOrders[] = $order_id;
-	$by_user = 'zeropaid_cancellation_25hr';
-	
-	//$sql_update_status = "UPDATE wpk4_backend_travel_bookings SET payment_status = 'canceled', payment_modified = '$current_email_date', payment_modified_by = '$by_user' WHERE order_id = '$order_id'";
-	//$result_status = mysqli_query($mysqli,$sql_update_status) or die(mysqli_error());
-    
-    //mysqli_query($mysqli, "insert into wpk4_backend_order_email_history (order_id, email_type, email_address, initiated_date, initiated_by, email_body, email_subject) 
-    //values ('$order_id','Cancellation','','$current_email_date','$by_user', '', 'Cancellation')") or die(mysqli_error($mysqli));
 
-	//availability_pax_update($order_id, $by_user);
-	
-    $new_status = 'cancel';
+$processedOrders = [];
+foreach ($fit25HoursBookings as $row) {
+    $order_id = $row['order_id'] ?? '';
+    if (in_array($order_id, $processedOrders)) {
+        continue;
+    }
+    $processedOrders[] = $order_id;
+    
+    // Original file had cancellation logic commented out
+    // API handles the business logic, we just display
+    
+    $new_status = $row['new_status'] ?? 'cancel';
     
     echo "<tr>
-        <td>".$row['order_id']."</td>
-        <td>".$row['order_date']."</td>
-        <td>".$row['trams_received_amount']."</td>
-        <td>".$row['travel_date']."</td>
-        <td>".$row['payment_status']."</td>
-        <td>".$new_status."</td>
+        <td>".htmlspecialchars($order_id)."</td>
+        <td>".htmlspecialchars($row['order_date'] ?? '')."</td>
+        <td>".htmlspecialchars($row['trams_received_amount'] ?? '0.00')."</td>
+        <td>".htmlspecialchars($row['travel_date'] ?? '')."</td>
+        <td>".htmlspecialchars($row['payment_status'] ?? '')."</td>
+        <td>".htmlspecialchars($new_status)."</td>
     </tr>";
 }
 echo '</table>';
 /* FIT cancellation if no payment received after 25 hours ends. */
 
-/* All booking cancellation if no payment received after 96 hours starts. */
-$query = "SELECT 
-    bookings.auto_id, 
-    bookings.order_id, 
-    bookings.order_date, 
-    bookings.travel_date, 
-    bookings.payment_status, 
-    COALESCE(pays.trams_received_amount, '0.00') AS trams_received_amount
-FROM wpk4_backend_travel_bookings AS bookings 
-LEFT JOIN wpk4_backend_travel_booking_pax AS pax 
-    ON bookings.order_id = pax.order_id 
-    AND bookings.co_order_id = pax.co_order_id 
-    AND bookings.product_id = pax.product_id 
-LEFT JOIN wpk4_backend_travel_payment_history AS pays 
-    ON bookings.order_id = pays.order_id 
-WHERE 
-    bookings.payment_status = 'partially_paid' 
-    AND bookings.sub_payment_status IN ('BPAY Paid', 'BPAY Received')
-    AND bookings.order_date <= NOW() - INTERVAL 96 HOUR 
-ORDER BY 
-    bookings.auto_id ASC 
-LIMIT 100;
-";
-echo $query;
-$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-$row_counter = mysqli_num_rows($result);
-$processedOrders = array();	
+// Section 4: BPAY cancellation (96 hours)
+echo '</br></br></br>';
 echo '</br></br>Cancellation for GDeals & FIT - BPAY Paid after 96 hrs</br></br>';
 echo '<table><tr><th>Order ID / PNR</th><th>Order Date</th><th>payment</th><th>Travel date</th><th>Payment Status</th><th>New Payment Status</th></tr>';
-while($row = mysqli_fetch_assoc($result))
-{
-    $order_id = $row['order_id'];
+
+$processedOrders = [];
+foreach ($bpay96HoursBookings as $row) {
+    $order_id = $row['order_id'] ?? '';
     if (in_array($order_id, $processedOrders)) {
-		continue; // Skip to the next iteration if the order ID is already processed
-	}
-	$processedOrders[] = $order_id;
-	$by_user = 'zeropaid_cancellation_96hr';
-	
-	//$sql_update_status = "UPDATE wpk4_backend_travel_bookings SET payment_status = 'canceled', payment_modified = '$current_email_date', payment_modified_by = '$by_user' WHERE order_id = '$order_id'";
-	//$result_status = mysqli_query($mysqli,$sql_update_status) or die(mysqli_error());
+        continue;
+    }
+    $processedOrders[] = $order_id;
     
-    //mysqli_query($mysqli, "insert into wpk4_backend_order_email_history (order_id, email_type, email_address, initiated_date, initiated_by, email_body, email_subject) 
-    //values ('$order_id','Cancellation','','$current_email_date','$by_user', '', 'Cancellation')") or die(mysqli_error($mysqli));
-	
-	//availability_pax_update($order_id, $by_user);
-	
-    $new_status = 'cancel';
+    // Original file had cancellation logic commented out
+    // API handles the business logic, we just display
+    
+    $new_status = $row['new_status'] ?? 'cancel';
     
     echo "<tr>
-        <td>".$row['order_id']."</td>
-        <td>".$row['order_date']."</td>
-        <td>".$row['trams_received_amount']."</td>
-        <td>".$row['travel_date']."</td>
-        <td>".$row['payment_status']."</td>
-        <td>".$new_status."</td>
+        <td>".htmlspecialchars($order_id)."</td>
+        <td>".htmlspecialchars($row['order_date'] ?? '')."</td>
+        <td>".htmlspecialchars($row['trams_received_amount'] ?? '0.00')."</td>
+        <td>".htmlspecialchars($row['travel_date'] ?? '')."</td>
+        <td>".htmlspecialchars($row['payment_status'] ?? '')."</td>
+        <td>".htmlspecialchars($new_status)."</td>
     </tr>";
 }
 echo '</table>';

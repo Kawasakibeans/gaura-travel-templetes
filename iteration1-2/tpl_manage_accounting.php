@@ -8,49 +8,636 @@
  * @since Twenty Twenty 1.0
  * @author Sri Harshan
  */
-get_header();
-date_default_timezone_set("Australia/Melbourne"); 
-global $current_user; 
-wp_get_current_user();
-$currnt_userlogn = $current_user->user_login;
-$current_date_and_time = date("Y-m-d H:i:s");
-include('wp-config-custom.php');
 
+require_once($_SERVER['DOCUMENT_ROOT'].'/wp-load.php');
+
+date_default_timezone_set("Australia/Melbourne");
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1';
+
+global $wpdb, $current_user;
+
+wp_get_current_user();
+$currnt_userlogn = $current_user->user_login ?? 'system';
+$current_date_and_time = date("Y-m-d H:i:s");
 $current_url = "https://$_SERVER[HTTP_HOST]$_SERVER[REQUEST_URI]";
 
-$query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='$ip_address'";
-$result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
-$is_ip_matched = mysqli_num_rows($result_ip_selection);
+// Check if this is an API request
+$is_api_request = false;
+$request_uri = $_SERVER['REQUEST_URI'] ?? '';
+$path = parse_url($request_uri, PHP_URL_PATH);
+$path_parts = array_filter(explode('/', trim($path, '/')));
+$path_parts = array_values($path_parts);
+
+// Check if path contains API indicators
+for ($i = 0; $i < count($path_parts); $i++) {
+    if ($path_parts[$i] === 'accounting') {
+        $is_api_request = true;
+        break;
+    }
+}
+
+// If API request, handle it and exit
+if ($is_api_request) {
+    header('Content-Type: application/json');
+    
+    // Helper functions
+    function sendResponse($status, $data = null, $message = null, $code = 200) {
+        http_response_code($code);
+        echo json_encode([
+            'status' => $status,
+            'data' => $data,
+            'message' => $message
+        ]);
+        exit;
+    }
+    
+    function sendError($message, $code = 500) {
+        sendResponse('error', null, $message, $code);
+    }
+    
+    $method = $_SERVER['REQUEST_METHOD'];
+    
+    // Extract resource and ID from path
+    $resource = null;
+    $resource_id = null;
+    for ($i = 0; $i < count($path_parts); $i++) {
+        if ($path_parts[$i] === 'accounting' && isset($path_parts[$i + 1])) {
+            $resource = $path_parts[$i + 1];
+            if (isset($path_parts[$i + 2]) && is_numeric($path_parts[$i + 2])) {
+                $resource_id = intval($path_parts[$i + 2]);
+            }
+            break;
+        }
+    }
+    
+    try {
+        // POST /v1/accounting/bank-accounts - Create bank account
+        if ($method === 'POST' && $resource === 'bank-accounts' && $resource_id === null) {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            // Validate required fields
+            $required = ['bank_id', 'bank_account_name', 'bank_branch', 'bank_account_number'];
+            $data = [];
+            foreach ($required as $field) {
+                if (empty($input[$field])) {
+                    sendError("Field '{$field}' is required", 400);
+                }
+                $data[$field] = trim($input[$field]);
+            }
+            
+            // Original Query:
+            // INSERT INTO wpk4_backend_accounts_bank_account (bank_id, account_name, account, branch) 
+            // VALUES (:bank_id, :account_name, :account_number, :branch)
+            
+            $result = $wpdb->insert(
+                $wpdb->prefix . 'backend_accounts_bank_account',
+                [
+                    'bank_id' => $data['bank_id'],
+                    'account_name' => $data['bank_account_name'],
+                    'account' => $data['bank_account_number'],
+                    'branch' => $data['bank_branch']
+                ],
+                ['%s', '%s', '%s', '%s']
+            );
+            
+            if ($result === false) {
+                sendError('Failed to create bank account: ' . $wpdb->last_error, 500);
+            }
+            
+            sendResponse('success', ['id' => $wpdb->insert_id, 'message' => 'Bank account created successfully'], 'Bank account created successfully', 201);
+        }
+        
+        // GET /v1/accounting/bank-accounts - List bank accounts
+        if ($method === 'GET' && $resource === 'bank-accounts' && $resource_id === null) {
+            // Original Query:
+            // SELECT * FROM wpk4_backend_accounts_bank_account
+            // ORDER BY auto_id DESC
+            
+            $results = $wpdb->get_results(
+                "SELECT * FROM {$wpdb->prefix}backend_accounts_bank_account ORDER BY auto_id DESC",
+                ARRAY_A
+            );
+            
+            $formatted_results = [];
+            foreach ($results as $row) {
+                $formatted_results[] = [
+                    'bank_id' => $row['bank_id'],
+                    'account_name' => $row['account_name'],
+                    'branch' => $row['branch'],
+                    'account' => $row['account'],
+                    'auto_id' => intval($row['auto_id'])
+                ];
+            }
+            
+            sendResponse('success', $formatted_results, 'Bank accounts retrieved successfully');
+        }
+        
+        // GET /v1/accounting/payments - List payment records
+        if ($method === 'GET' && $resource === 'payments' && $resource_id === null) {
+            $where = [];
+            $whereValues = [];
+            $whereFormats = [];
+            
+            // Payment date filter
+            if (!empty($_GET['payment_date'])) {
+                $where[] = "date(payments.process_date) = %s";
+                $whereValues[] = trim($_GET['payment_date']);
+                $whereFormats[] = '%s';
+            }
+            
+            // Order date filter
+            if (!empty($_GET['order_date'])) {
+                $where[] = "date(bookings.order_date) = %s";
+                $whereValues[] = trim($_GET['order_date']);
+                $whereFormats[] = '%s';
+            }
+            
+            // Reference no filter
+            if (!empty($_GET['reference_no'])) {
+                $where[] = "payments.reference_no LIKE %s";
+                $whereValues[] = '%' . trim($_GET['reference_no']) . '%';
+                $whereFormats[] = '%s';
+            }
+            
+            // Amount filter (supports range like "100" or "99-101")
+            if (!empty($_GET['amount'])) {
+                $amount = trim($_GET['amount']);
+                if (strpos($amount, '-') !== false) {
+                    $amount_parts = explode('-', $amount);
+                    $where[] = "payments.trams_received_amount BETWEEN %f AND %f";
+                    $whereValues[] = floatval(trim($amount_parts[0]));
+                    $whereValues[] = floatval(trim($amount_parts[1]));
+                    $whereFormats[] = '%f';
+                    $whereFormats[] = '%f';
+                } else {
+                    $where[] = "payments.trams_received_amount = %f";
+                    $whereValues[] = floatval($amount);
+                    $whereFormats[] = '%f';
+                }
+            }
+            
+            // Payment method filter
+            if (!empty($_GET['payment_method'])) {
+                $where[] = "payments.payment_method = %s";
+                $whereValues[] = trim($_GET['payment_method']);
+                $whereFormats[] = '%s';
+            }
+            
+            // Booking source filter
+            if (!empty($_GET['booking_source'])) {
+                $booking_source = trim($_GET['booking_source']);
+                if ($booking_source === 'WPT') {
+                    $where[] = "(bookings.order_type = %s OR bookings.order_type = '')";
+                    $whereValues[] = $booking_source;
+                    $whereFormats[] = '%s';
+                } else {
+                    $where[] = "bookings.order_type = %s";
+                    $whereValues[] = $booking_source;
+                    $whereFormats[] = '%s';
+                }
+            }
+            
+            // Order ID filter (can be order_id or PNR)
+            if (!empty($_GET['order_id'])) {
+                $order_id = trim($_GET['order_id']);
+                if (ctype_digit($order_id)) {
+                    $where[] = "payments.order_id = %d";
+                    $whereValues[] = intval($order_id);
+                    $whereFormats[] = '%d';
+                } else {
+                    $where[] = "pax.pnr = %s";
+                    $whereValues[] = $order_id;
+                    $whereFormats[] = '%s';
+                }
+            }
+            
+            // Profile ID filter
+            if (!empty($_GET['profile_id'])) {
+                $where[] = "payments.profile_no = %s";
+                $whereValues[] = trim($_GET['profile_id']);
+                $whereFormats[] = '%s';
+            }
+            
+            // Email/Phone filter
+            if (!empty($_GET['email_phone'])) {
+                $email_phone = trim($_GET['email_phone']);
+                $where[] = "(bookings.email LIKE %s OR bookings.phone LIKE %s)";
+                $whereValues[] = '%' . $email_phone . '%';
+                $whereValues[] = '%' . $email_phone . '%';
+                $whereFormats[] = '%s';
+                $whereFormats[] = '%s';
+            }
+            
+            // PNR/Ticket filter
+            if (!empty($_GET['pnr_ticket'])) {
+                $pnr_ticket = trim($_GET['pnr_ticket']);
+                $where[] = "(pax.pnr LIKE %s OR pax.ticket_number LIKE %s)";
+                $whereValues[] = '%' . $pnr_ticket . '%';
+                $whereValues[] = '%' . $pnr_ticket . '%';
+                $whereFormats[] = '%s';
+                $whereFormats[] = '%s';
+            }
+            
+            // Payment type filter
+            if (!empty($_GET['payment_type'])) {
+                $payment_type = trim($_GET['payment_type']);
+                $payment_type_map = [
+                    'deposit' => '"deposit"',
+                    'balance' => '"balance", "balance "',
+                    'dc_charge' => '"dc_charge", "Datechange"',
+                    'additional_payment' => '"additional_payment"',
+                    'deposit_adjustment' => '"deposit_adjustment"',
+                    'refund' => '"Refund"',
+                    'other' => '"other"'
+                ];
+                
+                if (isset($payment_type_map[$payment_type])) {
+                    $where[] = "payments.pay_type IN (" . $payment_type_map[$payment_type] . ")";
+                }
+            }
+            
+            // Clear date filter
+            if (!empty($_GET['clear_date'])) {
+                $where[] = "date(payments.cleared_date) = %s";
+                $whereValues[] = trim($_GET['clear_date']);
+                $whereFormats[] = '%s';
+            }
+            
+            // Original Query:
+            // SELECT * FROM wpk4_backend_travel_payment_history payments
+            // JOIN wpk4_backend_travel_bookings bookings ON payments.order_id = bookings.order_id
+            // JOIN wpk4_backend_travel_booking_pax pax ON payments.order_id = pax.order_id
+            // WHERE [filters based on query parameters]
+            // ORDER BY payments.auto_id DESC
+            // LIMIT 100
+            
+            $sql = "SELECT 
+                        payments.auto_id, payments.order_id, payments.process_date, payments.source, payments.profile_no, 
+                        payments.trams_remarks, payments.trams_received_amount, payments.reference_no, payments.payment_method, 
+                        payments.pay_type, payments.cleared_date, payments.cleared_by, payments.modified_date, payments.modified_by,
+                        pax.ticket_number, pax.pnr,
+                        bookings.payment_status, bookings.order_type, bookings.email, bookings.phone
+                    FROM {$wpdb->prefix}backend_travel_payment_history payments
+                    JOIN {$wpdb->prefix}backend_travel_bookings bookings ON payments.order_id = bookings.order_id
+                    JOIN {$wpdb->prefix}backend_travel_booking_pax pax ON payments.order_id = pax.order_id";
+            
+            if (!empty($where)) {
+                $sql .= " WHERE " . implode(" AND ", $where);
+            }
+            
+            $sql .= " ORDER BY payments.auto_id DESC LIMIT 100";
+            
+            if (!empty($whereValues)) {
+                $prepared = $wpdb->prepare($sql, $whereValues);
+                $results = $wpdb->get_results($prepared, ARRAY_A);
+            } else {
+                $results = $wpdb->get_results($sql, ARRAY_A);
+            }
+            
+            // Format results
+            $formatted_results = [];
+            foreach ($results as $row) {
+                $formatted_results[] = [
+                    'auto_id' => intval($row['auto_id']),
+                    'order_id' => $row['order_id'],
+                    'process_date' => $row['process_date'],
+                    'source' => $row['source'],
+                    'profile_no' => $row['profile_no'],
+                    'trams_remarks' => $row['trams_remarks'],
+                    'trams_received_amount' => $row['trams_received_amount'],
+                    'reference_no' => $row['reference_no'],
+                    'payment_method' => $row['payment_method'],
+                    'pay_type' => $row['pay_type'],
+                    'cleared_date' => $row['cleared_date'],
+                    'cleared_by' => $row['cleared_by'],
+                    'modified_date' => $row['modified_date'],
+                    'modified_by' => $row['modified_by'],
+                    'ticket_number' => $row['ticket_number'],
+                    'pnr' => $row['pnr'],
+                    'payment_status' => $row['payment_status'],
+                    'order_type' => $row['order_type']
+                ];
+            }
+            
+            sendResponse('success', $formatted_results, 'Payment records retrieved successfully');
+        }
+        
+        // PATCH /v1/accounting/payments/{payment_id} - Update payment history
+        if ($method === 'PATCH' && $resource === 'payments' && $resource_id !== null) {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            if (empty($input['field_name'])) {
+                sendError('field_name is required', 400);
+            }
+            
+            $field_name = trim($input['field_name']);
+            $field_value = isset($input['field_value']) ? trim($input['field_value']) : '';
+            $cleared = isset($input['cleared']) ? filter_var($input['cleared'], FILTER_VALIDATE_BOOLEAN) : false;
+            
+            // Get current record
+            $current_record = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT * FROM {$wpdb->prefix}backend_travel_payment_history WHERE auto_id = %d",
+                    $resource_id
+                ),
+                ARRAY_A
+            );
+            
+            if (!$current_record) {
+                sendError('Payment record not found', 404);
+            }
+            
+            $updateData = [
+                $field_name => $field_value,
+                'modified_date' => $current_date_and_time,
+                'modified_by' => $currnt_userlogn
+            ];
+            
+            $updateFormats = ['%s', '%s', '%s'];
+            
+            if ($cleared) {
+                $updateData['cleared_date'] = $current_date_and_time;
+                $updateData['cleared_by'] = $currnt_userlogn;
+                $updateFormats[] = '%s';
+                $updateFormats[] = '%s';
+            }
+            
+            // Original Query:
+            // UPDATE wpk4_backend_travel_payment_history 
+            // SET [field_name] = :field_value,
+            //     modified_date = :modified_date,
+            //     modified_by = :modified_by,
+            //     cleared_date = :cleared_date,
+            //     cleared_by = :cleared_by
+            // WHERE auto_id = :payment_id
+            
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_travel_payment_history',
+                $updateData,
+                ['auto_id' => $resource_id],
+                $updateFormats,
+                ['%d']
+            );
+            
+            if ($result === false) {
+                sendError('Failed to update payment record: ' . $wpdb->last_error, 500);
+            }
+            
+            // Log update history
+            $wpdb->insert(
+                $wpdb->prefix . 'backend_travel_booking_update_history',
+                [
+                    'order_id' => $current_record['order_id'],
+                    'pax_auto_id' => $resource_id,
+                    'meta_key' => $field_name,
+                    'meta_value' => $field_value,
+                    'meta_key_data' => 'Payment Update into wpk4_backend_travel_payment_history',
+                    'updated_time' => $current_date_and_time,
+                    'updated_user' => $currnt_userlogn
+                ],
+                ['%s', '%d', '%s', '%s', '%s', '%s', '%s']
+            );
+            
+            sendResponse('success', ['message' => 'Payment record updated successfully'], 'Payment record updated successfully');
+        }
+        
+        // POST /v1/accounting/payment-reconciliation - Create payment reconciliation
+        if ($method === 'POST' && $resource === 'payment-reconciliation' && $resource_id === null) {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            // Validate required fields
+            $required = ['process_date', 'payment_method', 'amount'];
+            $data = [];
+            foreach ($required as $field) {
+                if (empty($input[$field])) {
+                    sendError("Field '{$field}' is required", 400);
+                }
+                $data[$field] = trim($input[$field]);
+            }
+            
+            // Optional fields
+            $data['remark'] = isset($input['remark']) ? trim($input['remark']) : '';
+            
+            // Original Query:
+            // INSERT INTO wpk4_backend_travel_payment_reconciliation 
+            // (process_date, payment_method, amount, remark, added_by) 
+            // VALUES (:process_date, :payment_method, :amount, :remark, :added_by)
+            
+            $result = $wpdb->insert(
+                $wpdb->prefix . 'backend_travel_payment_reconciliation',
+                [
+                    'process_date' => $data['process_date'],
+                    'payment_method' => $data['payment_method'],
+                    'amount' => floatval($data['amount']),
+                    'remark' => $data['remark'],
+                    'added_by' => $currnt_userlogn
+                ],
+                ['%s', '%s', '%f', '%s', '%s']
+            );
+            
+            if ($result === false) {
+                sendError('Failed to create payment reconciliation: ' . $wpdb->last_error, 500);
+            }
+            
+            sendResponse('success', ['id' => $wpdb->insert_id, 'message' => 'Payment reconciliation created successfully'], 'Payment reconciliation created successfully', 201);
+        }
+        
+        // GET /v1/accounting/bank-reconciliation - Get bank reconciliation data
+        if ($method === 'GET' && $resource === 'bank-reconciliation' && $resource_id === null) {
+            // Validate required parameters
+            if (empty($_GET['bank'])) {
+                sendError('bank parameter is required', 400);
+            }
+            if (empty($_GET['from'])) {
+                sendError('from parameter is required', 400);
+            }
+            if (empty($_GET['to'])) {
+                sendError('to parameter is required', 400);
+            }
+            
+            $bank_filter = trim($_GET['bank']);
+            $from_date = trim($_GET['from']) . ' 00:00:00';
+            $to_date = trim($_GET['to']) . ' 23:59:59';
+            $from_date_only = trim($_GET['from']);
+            
+            // Original Query 1:
+            // SELECT * FROM wpk4_backend_travel_payment_history
+            // WHERE payment_method = :bank 
+            //   AND process_date BETWEEN :from AND :to
+            // ORDER BY process_date ASC
+            
+            $payment_records = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT * FROM {$wpdb->prefix}backend_travel_payment_history 
+                     WHERE payment_method = %s 
+                     AND process_date BETWEEN %s AND %s 
+                     ORDER BY process_date ASC",
+                    $bank_filter,
+                    $from_date,
+                    $to_date
+                ),
+                ARRAY_A
+            );
+            
+            // Original Query 2:
+            // SELECT sum(trams_received_amount) as total_cleared_amount 
+            // FROM wpk4_backend_travel_payment_history
+            // WHERE payment_method = :bank 
+            //   AND process_date BETWEEN :from AND :to
+            //   AND cleared_date IS NOT NULL
+            
+            if ($bank_filter == '12') {
+                $cleared_amount_result = $wpdb->get_row(
+                    $wpdb->prepare(
+                        "SELECT sum(trams_received_amount) as total_cleared_amount 
+                         FROM {$wpdb->prefix}backend_travel_payment_history
+                         WHERE payment_method = %s 
+                         AND date(process_date) < %s
+                         AND cleared_date IS NOT NULL",
+                        $bank_filter,
+                        $from_date_only
+                    ),
+                    ARRAY_A
+                );
+            } else {
+                $cleared_amount_result = $wpdb->get_row(
+                    $wpdb->prepare(
+                        "SELECT sum(trams_received_amount) as total_cleared_amount 
+                         FROM {$wpdb->prefix}backend_travel_payment_history
+                         WHERE payment_method = %s 
+                         AND process_date BETWEEN %s AND %s
+                         AND cleared_date IS NOT NULL",
+                        $bank_filter,
+                        $from_date,
+                        $to_date
+                    ),
+                    ARRAY_A
+                );
+            }
+            
+            $total_cleared_amount = floatval($cleared_amount_result['total_cleared_amount'] ?? 0);
+            
+            // Original Query 3:
+            // SELECT outstanding_amount 
+            // FROM wpk4_backend_accounts_bank_account 
+            // WHERE bank_id = :bank
+            
+            $outstanding_result = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT outstanding_amount FROM {$wpdb->prefix}backend_accounts_bank_account WHERE bank_id = %s",
+                    $bank_filter
+                ),
+                ARRAY_A
+            );
+            
+            $initial_outstanding_amount = floatval($outstanding_result['outstanding_amount'] ?? 0);
+            
+            // Format payment records
+            $formatted_records = [];
+            foreach ($payment_records as $row) {
+                $formatted_records[] = [
+                    'auto_id' => intval($row['auto_id']),
+                    'order_id' => $row['order_id'],
+                    'process_date' => $row['process_date'],
+                    'trams_received_amount' => $row['trams_received_amount'],
+                    'reference_no' => $row['reference_no'],
+                    'cleared_date' => $row['cleared_date'],
+                    'cleared_by' => $row['cleared_by']
+                ];
+            }
+            
+            sendResponse('success', [
+                'payment_records' => $formatted_records,
+                'total_cleared_amount' => $total_cleared_amount,
+                'initial_outstanding_amount' => $initial_outstanding_amount
+            ], 'Bank reconciliation data retrieved successfully');
+        }
+        
+        // Route not found
+        sendError('Endpoint not found', 404);
+        
+    } catch (Exception $e) {
+        sendError($e->getMessage(), $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500);
+    }
+}
+
+// Continue with original template code for HTML output
+get_header();
+
+include('wp-config-custom.php');
+
+// Create mysqli connection for backward compatibility with legacy code
+// NOTE: This is ONLY for compatibility - all new code should use $wpdb
+// TODO: Gradually convert all mysqli calls to $wpdb
+if (class_exists('mysqli') && !isset($mysqli)) {
+    // Get database credentials from WordPress config
+    $db_host = DB_HOST;
+    $db_user = DB_USER;
+    $db_password = DB_PASSWORD;
+    $db_name = DB_NAME;
+    
+    // Extract host and port if needed
+    $host_parts = explode(':', $db_host);
+    $db_hostname = $host_parts[0];
+    $db_port = isset($host_parts[1]) ? $host_parts[1] : 3306;
+    
+    // Create mysqli connection for legacy code compatibility
+    $mysqli = @new mysqli($db_hostname, $db_user, $db_password, $db_name, $db_port);
+    
+    if ($mysqli->connect_errno) {
+        // If mysqli connection fails, set to null
+        $mysqli = null;
+    }
+}
+
+// Original Query:
+// SELECT * FROM wpk4_backend_ip_address_checkup WHERE ip_address = ?
+$query_ip_selection = $wpdb->prepare(
+    "SELECT * FROM {$wpdb->prefix}backend_ip_address_checkup WHERE ip_address = %s",
+    $ip_address
+);
+$result_ip_selection = $wpdb->get_results($query_ip_selection, ARRAY_A);
+$is_ip_matched = count($result_ip_selection);
 
 if(!function_exists('gdeal_name_update_ajax'))
 {
 	function gdeal_name_update_ajax($order_id)
 	{
-			$currnt_userlogn = 'GDeals Payment'; 
-			$url = "https://gauratravel.com.au/wp-content/themes/twentytwenty/templates/tpl_amadeus_name_update_backend.php?order_id=" . urlencode($order_id) ."&agent=" . urlencode($currnt_userlogn);
-
-			$curl = curl_init();
-
-			curl_setopt_array($curl, array(
-				CURLOPT_URL => $url,
-				CURLOPT_RETURNTRANSFER => true,
-				CURLOPT_TIMEOUT => 30,
-				CURLOPT_FOLLOWLOCATION => true,
-				CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-				CURLOPT_CUSTOMREQUEST => 'GET'
-			));
-
-			$response = curl_exec($curl);
-			$http_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-
-			if (curl_errno($curl)) {
-				//echo "cURL Error: " . curl_error($curl);
-			} else {
-				//echo "Response (HTTP $http_code): " . $response;
-			}
-
-			curl_close($curl);
-
+		$currnt_userlogn = 'GDeals Payment'; 
+		$url = "https://gauratravel.com.au/wp-content/themes/twentytwenty/templates/tpl_amadeus_name_update_backend.php?order_id=" . urlencode($order_id) . "&agent=" . urlencode($currnt_userlogn);
+		
+		// Original cURL code:
+		// $curl = curl_init();
+		// curl_setopt_array($curl, array(
+		//     CURLOPT_URL => $url,
+		//     CURLOPT_RETURNTRANSFER => true,
+		//     CURLOPT_TIMEOUT => 30,
+		//     CURLOPT_FOLLOWLOCATION => true,
+		//     CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+		//     CURLOPT_CUSTOMREQUEST => 'GET'
+		// ));
+		// $response = curl_exec($curl);
+		// $http_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+		// curl_close($curl);
+		
+		// Converted to WordPress HTTP API:
+		$response = wp_remote_get($url, [
+			'timeout' => 30,
+			'redirection' => 5
+		]);
+		
+		if (is_wp_error($response)) {
+			// Silently handle errors
+		}
 	}
 }
 ?>
@@ -109,8 +696,14 @@ if(!function_exists('gdeal_name_update_ajax'))
                 // view all bank accounts section
                 if( $_GET['pg'] == 'bank-accounts' && current_user_can( 'administrator' ) )
                 {
-                    $query_bank_accounts = "SELECT * FROM wpk4_backend_accounts_bank_account";
-					$result_bank_accounts = mysqli_query($mysqli, $query_bank_accounts);
+                    // Original Query:
+                    // SELECT * FROM wpk4_backend_accounts_bank_account
+                    // ORDER BY auto_id DESC
+                    
+                    $result_bank_accounts = $wpdb->get_results(
+                        "SELECT * FROM {$wpdb->prefix}backend_accounts_bank_account ORDER BY auto_id DESC",
+                        ARRAY_A
+                    );
                     ?>
                     <a href="?"><button class="accounts_back_to_home_button">Home</button></a>
                     <a href="?pg=add-bank-account"><button class="accounts_general_button">Add New Bank</button></a>
@@ -126,7 +719,7 @@ if(!function_exists('gdeal_name_update_ajax'))
         				</thead>
     				    <tbody>
             				<?php
-            				while($row_bank_accounts = mysqli_fetch_assoc($result_bank_accounts))
+            				foreach($result_bank_accounts as $row_bank_accounts)
             				{
         		                ?>
         		                <tr>
@@ -173,15 +766,31 @@ if(!function_exists('gdeal_name_update_ajax'))
                     <?php
                     if(isset($_POST['save_bank_account']))
 				    {
-				        $bank_id = $_POST['bank_id'];
-                        $bank_account_name = $_POST['bank_account_name'];
-                        $bank_branch = $_POST['bank_branch'];
-                        $bank_account_number = $_POST['bank_account_number'];
+				        $bank_id = trim($_POST['bank_id']);
+                        $bank_account_name = trim($_POST['bank_account_name']);
+                        $bank_branch = trim($_POST['bank_branch']);
+                        $bank_account_number = trim($_POST['bank_account_number']);
                                         
-				        mysqli_query($mysqli,"insert into wpk4_backend_accounts_bank_account ( bank_id, account_name, account, branch ) 
-						values ('$bank_id','$bank_account_name','$bank_account_number' ,'$bank_branch' )") or die(mysqli_error($mysqli));
-						
-                        echo '<script>window.location.href="?pg=bank-accounts";</script>';
+                        // Original Query:
+                        // INSERT INTO wpk4_backend_accounts_bank_account (bank_id, account_name, account, branch) 
+                        // VALUES (:bank_id, :account_name, :account_number, :branch)
+                        
+                        $result = $wpdb->insert(
+                            $wpdb->prefix . 'backend_accounts_bank_account',
+                            [
+                                'bank_id' => $bank_id,
+                                'account_name' => $bank_account_name,
+                                'account' => $bank_account_number,
+                                'branch' => $bank_branch
+                            ],
+                            ['%s', '%s', '%s', '%s']
+                        );
+                        
+                        if ($result !== false) {
+                            echo '<script>window.location.href="?pg=bank-accounts";</script>';
+                        } else {
+                            echo "Error: " . $wpdb->last_error;
+                        }
 				    }
                 }
                 if($_GET['pg'] == 'view-payments' && (current_user_can( 'administrator' ) || current_user_can( 'ho_operations' ) || current_user_can( 'ticketing_user' ) || current_user_can( 'ticketing_admin' ) || current_user_can( 'datechange_manager' ) ) )
@@ -234,9 +843,12 @@ if(!function_exists('gdeal_name_update_ajax'))
                 			    <select name='payment_method' id='payment_method' style="width:100%; padding:10px;">
                 			        <option value="" selected>All</option>
                 			        <?php
-                			        $query_payment_method = "SELECT account_name, bank_id FROM wpk4_backend_accounts_bank_account where bank_id IN (7,8,9,5,13,14) order by account_name asc";
-                            		$result_payment_method = mysqli_query($mysqli, $query_payment_method) or die(mysqli_error($mysqli));
-                            		while($row_payment_method = mysqli_fetch_assoc($result_payment_method))
+                			        // Original Query:
+                			        // SELECT account_name, bank_id FROM wpk4_backend_accounts_bank_account 
+                			        // WHERE bank_id IN (7,8,9,5,13,14) ORDER BY account_name ASC
+                			        $query_payment_method = "SELECT account_name, bank_id FROM {$wpdb->prefix}backend_accounts_bank_account WHERE bank_id IN (7,8,9,5,13,14) ORDER BY account_name ASC";
+                            		$result_payment_method = $wpdb->get_results($query_payment_method, ARRAY_A);
+                            		foreach ($result_payment_method as $row_payment_method)
                         		    {
                         		        if(isset($_GET['payment_method']) && $_GET['payment_method'] != '' && $_GET['payment_method'] == $row_payment_method['bank_id'])
                         		        {
@@ -288,7 +900,7 @@ if(!function_exists('gdeal_name_update_ajax'))
                 			        /*
                 			        $query_payment_type = "SELECT distinct(pay_type) FROM wpk4_backend_travel_payment_history";
                             		$result_payment_type = mysqli_query($mysqli, $query_payment_type) or die(mysqli_error($mysqli));
-                            		while($row_payment_type = mysqli_fetch_assoc($result_payment_type))
+                            		foreach ($result_payment_type as $row_payment_type)
                         		    {
                         		        if(isset($_GET['payment_type']) && $_GET['payment_type'] != '' && $_GET['payment_type'] == $row_payment_type['pay_type'])
                         		        {
@@ -458,7 +1070,7 @@ if(!function_exists('gdeal_name_update_ajax'))
             			            bookings.payment_status, pax.pnr
             			    FROM wpk4_backend_travel_payment_history payments
             			    JOIN wpk4_backend_travel_bookings bookings ON 
-                                passenger.family_id = bookings.family_id
+                                payments.order_id = bookings.order_id
                             JOIN wpk4_backend_travel_booking_pax pax ON 
                                 payments.order_id = pax.order_id
             				where date(payments.process_date) = '$common_start_filter'
@@ -470,10 +1082,42 @@ if(!function_exists('gdeal_name_update_ajax'))
             		   //echo $query;	
             		}
             		$selection_query = $query;
-            		$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-            		$row_counter_ticket = mysqli_num_rows($result);
+            		// Original Query: Dynamic SELECT query (see above for full query)
+            		// Convert table prefix
+            		$query = str_replace('wpk4_', $wpdb->prefix, $query);
+            		$result = $wpdb->get_results($query, ARRAY_A);
+            		$row_counter_ticket = count($result);
             		$auto_numbering = 1;
             		$total_paxs = 0;
+            		
+            		// Pre-fetch all payment methods to avoid N+1 query problem
+            		$payment_methods_map = [];
+            		if (!empty($result)) {
+            		    // Collect all unique payment method IDs
+            		    $payment_method_ids = [];
+            		    foreach ($result as $row) {
+            		        $pm = $row['payment_method'];
+            		        if ($pm == 'UNKNOWN' || $pm == 'IATA' || $pm == 'DIRECT' || $pm == 'ASIAPAY') {
+            		            $pm = '8';
+            		        }
+            		        if (ctype_digit($pm) && !in_array($pm, $payment_method_ids)) {
+            		            $payment_method_ids[] = $pm;
+            		        }
+            		    }
+            		    
+            		    // Fetch all payment methods in one query
+            		    if (!empty($payment_method_ids)) {
+            		        $placeholders = implode(',', array_fill(0, count($payment_method_ids), '%d'));
+            		        $query_payment_methods = $wpdb->prepare(
+            		            "SELECT bank_id, account_name FROM {$wpdb->prefix}backend_accounts_bank_account WHERE bank_id IN ($placeholders)",
+            		            $payment_method_ids
+            		        );
+            		        $payment_methods_result = $wpdb->get_results($query_payment_methods, ARRAY_A);
+            		        foreach ($payment_methods_result as $pm_row) {
+            		            $payment_methods_map[$pm_row['bank_id']] = $pm_row['account_name'];
+            		        }
+            		    }
+            		}
             		
             		?>
             		</br>
@@ -500,7 +1144,7 @@ if(!function_exists('gdeal_name_update_ajax'))
                                 $fields = array('Created Date Time', 'Status','Amount','PNR','Order','Profile no.','Remarks');
                                 fputcsv($f, $fields, $delimiter);  
                                 $processedOrders = [];
-                        		while($row = mysqli_fetch_assoc($result))
+                        		foreach ($result as $row)
                         		{
                         			$auto_id = $row['auto_id'];
                         			
@@ -577,26 +1221,20 @@ if(!function_exists('gdeal_name_update_ajax'))
                                         </td>
                                         <td width='7%'>
                                             <?php 
+                                            $display_payment_method = $payment_method;
                                             if( $payment_method == 'UNKNOWN' || $payment_method == 'IATA' || $payment_method == 'DIRECT' || $payment_method == 'ASIAPAY' )
                                             {
-                                                $payment_method = '8';
+                                                $display_payment_method = '8';
                                             }
                                            
-                                            if (ctype_digit($payment_method)) 
+                                            if (ctype_digit($display_payment_method))
                                             {
-                                                
-                                                
-                                                $query_payment_method = "SELECT account_name FROM wpk4_backend_accounts_bank_account where bank_id = $payment_method";
-                                        		$result_payment_method = mysqli_query($mysqli, $query_payment_method) or die(mysqli_error($mysqli));
-                                        		$row_payment_method = mysqli_fetch_assoc($result_payment_method);
-                                    		    if(mysqli_num_rows($result_payment_method) > 0)
-                                    		    {
-                                    		        echo $row_payment_method['account_name'];  
-                                    		    }
-                                    		    else
-                                    		    {
-                                    		        echo 'Unknown';
-                                    		    }
+                                                // Use pre-fetched payment methods map
+                                                if (isset($payment_methods_map[$display_payment_method])) {
+                                                    echo esc_html($payment_methods_map[$display_payment_method]);
+                                                } else {
+                                                    echo 'Unknown';
+                                                }
                                             }
                                             else
                                     		{
@@ -656,8 +1294,10 @@ if(!function_exists('gdeal_name_update_ajax'))
                     if(isset($_POST['save_all_payment_records']))
 				    {
     					$query_checker = $selection_query;
-    					$result_checker = mysqli_query($mysqli, $query_checker);
-    					while($row_checker = mysqli_fetch_assoc($result_checker))
+    					// Convert table prefix
+    					$query_checker = str_replace('wpk4_', $wpdb->prefix, $query_checker);
+    					$result_checker = $wpdb->get_results($query_checker, ARRAY_A);
+    					foreach ($result_checker as $row_checker)
     					{
     						$row_auto_id = $row_checker['auto_id'];
     						$row_order_id = $row_checker['order_id'];
@@ -669,14 +1309,49 @@ if(!function_exists('gdeal_name_update_ajax'))
     							{
     								if($post_fieldname == $dbcolumn_and_postname_checker && $post_fieldvalue != $row_checker[$columnname_db])
     								{
-    									$sql_update_status = "UPDATE wpk4_backend_travel_payment_history SET 
-    										        $columnname_db='$post_fieldvalue', 
-        										    modified_date = '$current_date_and_time', 
-                                                    modified_by = '$currnt_userlogn' WHERE auto_id='$row_auto_id'";
-    									$result_status= mysqli_query($mysqli,$sql_update_status);
+    									// Original Query:
+    									// UPDATE wpk4_backend_travel_payment_history 
+    									// SET [column] = ?, modified_date = ?, modified_by = ? 
+    									// WHERE auto_id = ?
+    									// Note: Dynamic column name requires careful handling
+    									$sql_update_status = $wpdb->prepare(
+    										"UPDATE {$wpdb->prefix}backend_travel_payment_history SET 
+    										        %s = %s, 
+        										    modified_date = %s, 
+                                                    modified_by = %s 
+                                                WHERE auto_id = %s",
+    										$columnname_db,
+    										$post_fieldvalue,
+    										$current_date_and_time,
+    										$currnt_userlogn,
+    										$row_auto_id
+    									);
+    									// For dynamic column names, we need to use a different approach
+    									$sql_update_status = "UPDATE {$wpdb->prefix}backend_travel_payment_history SET 
+    										        `" . esc_sql($columnname_db) . "` = %s, 
+        										    modified_date = %s, 
+                                                    modified_by = %s 
+                                                WHERE auto_id = %s";
+    									$sql_update_status = $wpdb->prepare($sql_update_status, $post_fieldvalue, $current_date_and_time, $currnt_userlogn, $row_auto_id);
+    									$result_status = $wpdb->query($sql_update_status);
     									
-    									mysqli_query($mysqli,"insert into wpk4_backend_travel_booking_update_history (order_id, pax_auto_id, meta_key, meta_value, meta_key_data, updated_time, updated_user) 
-										values ('$row_order_id', '$row_auto_id', '$columnname_db', '$post_fieldvalue', 'Payment Update into wpk4_backend_travel_payment_history', '$current_date_and_time', '$currnt_userlogn')") or die(mysqli_error($mysqli));
+    									// Original Query:
+    									// INSERT INTO wpk4_backend_travel_booking_update_history 
+    									// (order_id, pax_auto_id, meta_key, meta_value, meta_key_data, updated_time, updated_user) 
+    									// VALUES (?, ?, ?, ?, ?, ?, ?)
+    									$wpdb->insert(
+    										$wpdb->prefix . 'backend_travel_booking_update_history',
+    										[
+    											'order_id' => $row_order_id,
+    											'pax_auto_id' => $row_auto_id,
+    											'meta_key' => $columnname_db,
+    											'meta_value' => $post_fieldvalue,
+    											'meta_key_data' => 'Payment Update into wpk4_backend_travel_payment_history',
+    											'updated_time' => $current_date_and_time,
+    											'updated_user' => $currnt_userlogn
+    										],
+    										['%s', '%s', '%s', '%s', '%s', '%s', '%s']
+    									);
     								}
     							}
     						}
@@ -797,9 +1472,12 @@ if(!function_exists('gdeal_name_update_ajax'))
                 			    <select name='payment_method' id='payment_method' style="width:100%; padding:10px;">
                 			        <option value="" selected>All</option>
                 			        <?php
-                			        $query_payment_method = "SELECT account_name, bank_id FROM wpk4_backend_accounts_bank_account where bank_id IN (7,8,9,5,13,14) order by account_name asc";
-                            		$result_payment_method = mysqli_query($mysqli, $query_payment_method) or die(mysqli_error($mysqli));
-                            		while($row_payment_method = mysqli_fetch_assoc($result_payment_method))
+                			        // Original Query:
+                			        // SELECT account_name, bank_id FROM wpk4_backend_accounts_bank_account 
+                			        // WHERE bank_id IN (7,8,9,5,13,14) ORDER BY account_name ASC
+                			        $query_payment_method = "SELECT account_name, bank_id FROM {$wpdb->prefix}backend_accounts_bank_account WHERE bank_id IN (7,8,9,5,13,14) ORDER BY account_name ASC";
+                            		$result_payment_method = $wpdb->get_results($query_payment_method, ARRAY_A);
+                            		foreach ($result_payment_method as $row_payment_method)
                         		    {
                         		        if(isset($_GET['payment_method']) && $_GET['payment_method'] != '' && $_GET['payment_method'] == $row_payment_method['bank_id'])
                         		        {
@@ -1117,7 +1795,7 @@ if(!function_exists('gdeal_name_update_ajax'))
             			            bookings.payment_status, pax.pnr
             			    FROM wpk4_backend_travel_payment_history payments
             			    JOIN wpk4_backend_travel_bookings bookings ON 
-                                passenger.family_id = bookings.family_id
+                                payments.order_id = bookings.order_id
                             JOIN wpk4_backend_travel_booking_pax pax ON 
                                 payments.order_id = pax.order_id
             				where date(payments.process_date) = '$common_start_filter'
@@ -1129,10 +1807,42 @@ if(!function_exists('gdeal_name_update_ajax'))
             		   echo $query;	
             		}
             		$selection_query = $query;
-            		$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-            		$row_counter_ticket = mysqli_num_rows($result);
+            		// Original Query: Dynamic SELECT query (see above for full query)
+            		// Convert table prefix
+            		$query = str_replace('wpk4_', $wpdb->prefix, $query);
+            		$result = $wpdb->get_results($query, ARRAY_A);
+            		$row_counter_ticket = count($result);
             		$auto_numbering = 1;
             		$total_paxs = 0;
+            		
+            		// Pre-fetch all payment methods to avoid N+1 query problem
+            		$payment_methods_map = [];
+            		if (!empty($result)) {
+            		    // Collect all unique payment method IDs
+            		    $payment_method_ids = [];
+            		    foreach ($result as $row) {
+            		        $pm = $row['payment_method'];
+            		        if ($pm == 'UNKNOWN' || $pm == 'IATA' || $pm == 'DIRECT' || $pm == 'ASIAPAY') {
+            		            $pm = '8';
+            		        }
+            		        if (ctype_digit($pm) && !in_array($pm, $payment_method_ids)) {
+            		            $payment_method_ids[] = $pm;
+            		        }
+            		    }
+            		    
+            		    // Fetch all payment methods in one query
+            		    if (!empty($payment_method_ids)) {
+            		        $placeholders = implode(',', array_fill(0, count($payment_method_ids), '%d'));
+            		        $query_payment_methods = $wpdb->prepare(
+            		            "SELECT bank_id, account_name FROM {$wpdb->prefix}backend_accounts_bank_account WHERE bank_id IN ($placeholders)",
+            		            $payment_method_ids
+            		        );
+            		        $payment_methods_result = $wpdb->get_results($query_payment_methods, ARRAY_A);
+            		        foreach ($payment_methods_result as $pm_row) {
+            		            $payment_methods_map[$pm_row['bank_id']] = $pm_row['account_name'];
+            		        }
+            		    }
+            		}
             		
             		?>
             		</br>
@@ -1159,7 +1869,7 @@ if(!function_exists('gdeal_name_update_ajax'))
                                 $fields = array('Created Date Time', 'Status','Amount','PNR','Order','Profile no.','Remarks');
                                 fputcsv($f, $fields, $delimiter);  
                                 $processedOrders = [];
-                        		while($row = mysqli_fetch_assoc($result))
+                        		foreach ($result as $row)
                         		{
                         			$auto_id = $row['auto_id'];
                         			
@@ -1236,26 +1946,20 @@ if(!function_exists('gdeal_name_update_ajax'))
                                         </td>
                                         <td width='7%'>
                                             <?php 
+                                            $display_payment_method = $payment_method;
                                             if( $payment_method == 'UNKNOWN' || $payment_method == 'IATA' || $payment_method == 'DIRECT' || $payment_method == 'ASIAPAY' )
                                             {
-                                                $payment_method = '8';
+                                                $display_payment_method = '8';
                                             }
                                            
-                                            if (ctype_digit($payment_method)) 
+                                            if (ctype_digit($display_payment_method))
                                             {
-                                                
-                                                
-                                                $query_payment_method = "SELECT account_name FROM wpk4_backend_accounts_bank_account where bank_id = $payment_method";
-                                        		$result_payment_method = mysqli_query($mysqli, $query_payment_method) or die(mysqli_error($mysqli));
-                                        		$row_payment_method = mysqli_fetch_assoc($result_payment_method);
-                                    		    if(mysqli_num_rows($result_payment_method) > 0)
-                                    		    {
-                                    		        echo $row_payment_method['account_name'];  
-                                    		    }
-                                    		    else
-                                    		    {
-                                    		        echo 'Unknown';
-                                    		    }
+                                                // Use pre-fetched payment methods map
+                                                if (isset($payment_methods_map[$display_payment_method])) {
+                                                    echo esc_html($payment_methods_map[$display_payment_method]);
+                                                } else {
+                                                    echo 'Unknown';
+                                                }
                                             }
                                             else
                                     		{
@@ -1315,8 +2019,10 @@ if(!function_exists('gdeal_name_update_ajax'))
                     if(isset($_POST['save_all_payment_records']))
 				    {
     					$query_checker = $selection_query;
-    					$result_checker = mysqli_query($mysqli, $query_checker);
-    					while($row_checker = mysqli_fetch_assoc($result_checker))
+    					// Convert table prefix
+    					$query_checker = str_replace('wpk4_', $wpdb->prefix, $query_checker);
+    					$result_checker = $wpdb->get_results($query_checker, ARRAY_A);
+    					foreach ($result_checker as $row_checker)
     					{
     						$row_auto_id = $row_checker['auto_id'];
     						$row_order_id = $row_checker['order_id'];
@@ -1328,14 +2034,49 @@ if(!function_exists('gdeal_name_update_ajax'))
     							{
     								if($post_fieldname == $dbcolumn_and_postname_checker && $post_fieldvalue != $row_checker[$columnname_db])
     								{
-    									$sql_update_status = "UPDATE wpk4_backend_travel_payment_history SET 
-    										        $columnname_db='$post_fieldvalue', 
-        										    modified_date = '$current_date_and_time', 
-                                                    modified_by = '$currnt_userlogn' WHERE auto_id='$row_auto_id'";
-    									$result_status= mysqli_query($mysqli,$sql_update_status);
+    									// Original Query:
+    									// UPDATE wpk4_backend_travel_payment_history 
+    									// SET [column] = ?, modified_date = ?, modified_by = ? 
+    									// WHERE auto_id = ?
+    									// Note: Dynamic column name requires careful handling
+    									$sql_update_status = $wpdb->prepare(
+    										"UPDATE {$wpdb->prefix}backend_travel_payment_history SET 
+    										        %s = %s, 
+        										    modified_date = %s, 
+                                                    modified_by = %s 
+                                                WHERE auto_id = %s",
+    										$columnname_db,
+    										$post_fieldvalue,
+    										$current_date_and_time,
+    										$currnt_userlogn,
+    										$row_auto_id
+    									);
+    									// For dynamic column names, we need to use a different approach
+    									$sql_update_status = "UPDATE {$wpdb->prefix}backend_travel_payment_history SET 
+    										        `" . esc_sql($columnname_db) . "` = %s, 
+        										    modified_date = %s, 
+                                                    modified_by = %s 
+                                                WHERE auto_id = %s";
+    									$sql_update_status = $wpdb->prepare($sql_update_status, $post_fieldvalue, $current_date_and_time, $currnt_userlogn, $row_auto_id);
+    									$result_status = $wpdb->query($sql_update_status);
     									
-    									mysqli_query($mysqli,"insert into wpk4_backend_travel_booking_update_history (order_id, pax_auto_id, meta_key, meta_value, meta_key_data, updated_time, updated_user) 
-										values ('$row_order_id', '$row_auto_id', '$columnname_db', '$post_fieldvalue', 'Payment Update into wpk4_backend_travel_payment_history', '$current_date_and_time', '$currnt_userlogn')") or die(mysqli_error($mysqli));
+    									// Original Query:
+    									// INSERT INTO wpk4_backend_travel_booking_update_history 
+    									// (order_id, pax_auto_id, meta_key, meta_value, meta_key_data, updated_time, updated_user) 
+    									// VALUES (?, ?, ?, ?, ?, ?, ?)
+    									$wpdb->insert(
+    										$wpdb->prefix . 'backend_travel_booking_update_history',
+    										[
+    											'order_id' => $row_order_id,
+    											'pax_auto_id' => $row_auto_id,
+    											'meta_key' => $columnname_db,
+    											'meta_value' => $post_fieldvalue,
+    											'meta_key_data' => 'Payment Update into wpk4_backend_travel_payment_history',
+    											'updated_time' => $current_date_and_time,
+    											'updated_user' => $currnt_userlogn
+    										],
+    										['%s', '%s', '%s', '%s', '%s', '%s', '%s']
+    									);
     								}
     							}
     						}
@@ -1469,8 +2210,11 @@ if(!function_exists('gdeal_name_update_ajax'))
             		   //echo $query;	
             		}
             		$selection_query = $query;
-            		$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-            		$row_counter_ticket = mysqli_num_rows($result);
+            		// Original Query: Dynamic SELECT query (see above for full query)
+            		// Convert table prefix
+            		$query = str_replace('wpk4_', $wpdb->prefix, $query);
+            		$result = $wpdb->get_results($query, ARRAY_A);
+            		$row_counter_ticket = count($result);
             		$auto_numbering = 1;
             		$total_paxs = 0;
             		
@@ -1496,7 +2240,7 @@ if(!function_exists('gdeal_name_update_ajax'))
                                 $fields = array('Order ID', 'Order Date','Status','Total Amount','Received Amount','Balance');
                                 fputcsv($f, $fields, $delimiter);  
                                 $processedOrders = [];
-                        		while($row = mysqli_fetch_assoc($result))
+                        		foreach ($result as $row)
                         		{
                         			$auto_id = $row['auto_id'];
                         			
@@ -1539,18 +2283,20 @@ if(!function_exists('gdeal_name_update_ajax'))
                                     
                                     $query_pnr_for_total_paid = "SELECT * FROM wpk4_backend_travel_booking_pax where order_id='$order_id'";
                                     $result_pnr_for_total_paid = mysqli_query($mysqli, $query_pnr_for_total_paid);
-                                    $row_pnr_for_total_paid = mysqli_fetch_assoc($result_pnr_for_total_paid);
+                                    $row_pnr_for_total_paid = !empty($result_pnr_for_total_paid) ? $result_pnr_for_total_paid[0] : null;
                                 	$received_pnr_for_total_paid = $row_pnr_for_total_paid['pnr'];
                                 	
                                 	$processedPaymentsPaid = array();	
                             		$query_payment_paid_amount = "SELECT * FROM wpk4_backend_travel_payment_history where (pay_type = 'deposit' OR pay_type LIKE 'balance' 
                             		OR pay_type LIKE 'Balance' OR pay_type = 'deposit_adjustment' OR pay_type = 'Refund' OR pay_type = 'additional_payment') 
                             		AND (order_id='$received_pnr_for_total_paid' OR order_id='$order_id') AND order_id != '' order by process_date desc";
-                                    $result_payment_paid_amount = mysqli_query($mysqli, $query_payment_paid_amount);
+                                    // Original Query: See $query_payment_paid_amount variable above
+                                    $query_payment_paid_amount = str_replace('wpk4_', $wpdb->prefix, $query_payment_paid_amount);
+                                    $result_payment_paid_amount = $wpdb->get_results($query_payment_paid_amount, ARRAY_A);
                                     $total_paid_for_booking = 0;
-                                    if($result_payment_paid_amount && mysqli_num_rows($result_payment_paid_amount) > 0)
+                                    if (!empty($result_payment_paid_amount))
                                     {
-                                        while($row_payment_paid_amount = mysqli_fetch_assoc($result_payment_paid_amount))
+                                        foreach ($result_payment_paid_amount as $row_payment_paid_amount)
                                         {
                                             $payment_identifier = $row_payment_paid_amount['process_date'].'^'.$row_payment_paid_amount['trams_received_amount'].'^'.$row_payment_paid_amount['reference_no']; // defined value to restric duplicate amount + ref no combination on G360
                                 			if (in_array($payment_identifier, $processedPaymentsPaid)) 
@@ -1730,7 +2476,7 @@ if(!function_exists('gdeal_name_update_ajax'))
                                             <?php
                                             $query_bank_accounts = "SELECT * FROM wpk4_backend_accounts_bank_account";
                         					$result_bank_accounts = mysqli_query($mysqli, $query_bank_accounts);
-                                            while($row_bank_accounts = mysqli_fetch_assoc($result_bank_accounts))
+                                            foreach ($result_bank_accounts as $row_bank_accounts)
                                     		{
                                     		    ?>
                                                 <option value="<?php echo $row_bank_accounts['bank_id']; ?>"><?php echo $row_bank_accounts['bank_id']; ?> <?php echo $row_bank_accounts['account_name']; ?></option>
@@ -1782,10 +2528,12 @@ if(!function_exists('gdeal_name_update_ajax'))
 				        
 				        $previous_order_date = date("Y-m-d H:i:s");
                         $query_select_booking_order_date = "SELECT order_date FROM wpk4_backend_travel_bookings where order_id='$order_id'";
-                        $result_select_booking_order_date = mysqli_query($mysqli, $query_select_booking_order_date);
-                        if(mysqli_num_rows($result_select_booking_order_date) > 0)
+                        // Original Query: See $query_select_booking_order_date variable above
+                        $query_select_booking_order_date = str_replace('wpk4_', $wpdb->prefix, $query_select_booking_order_date);
+                        $result_select_booking_order_date = $wpdb->get_results($query_select_booking_order_date, ARRAY_A);
+                        if (!empty($result_select_booking_order_date))
                         {
-                        	$row_select_booking_order_date = mysqli_fetch_assoc($result_select_booking_order_date);
+                        	$row_select_booking_order_date = $result_select_booking_order_date[0];
                         	$previous_order_date = $row_select_booking_order_date['order_date'];
                         }
                         
@@ -1802,8 +2550,28 @@ if(!function_exists('gdeal_name_update_ajax'))
                         $invoice_reference = $_POST['invoice_reference'];
                         $profile_no = $_POST['profile_no'];
 
-				        mysqli_query($mysqli,"insert into wpk4_backend_travel_payment_history ( order_id, source, profile_no, trams_remarks, trams_received_amount, reference_no, payment_method, process_date, added_on, added_by, pay_type, payment_change_deadline ) 
-						values ('$order_id', '$source', '$profile_no', '$payment_remark', '$payment_amount', '$invoice_reference', '$bank_account', '$payment_date', '$current_date_and_time', '$currnt_userlogn', '$pay_type', '$payment_refund_deadline' )") or die(mysqli_error($mysqli));
+				        // Original Query:
+				        // INSERT INTO wpk4_backend_travel_payment_history 
+				        // (order_id, source, profile_no, trams_remarks, trams_received_amount, reference_no, payment_method, process_date, added_on, added_by, pay_type, payment_change_deadline) 
+				        // VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				        $wpdb->insert(
+				            $wpdb->prefix . 'backend_travel_payment_history',
+				            [
+				                'order_id' => $order_id,
+				                'source' => $source,
+				                'profile_no' => $profile_no,
+				                'trams_remarks' => $payment_remark,
+				                'trams_received_amount' => $payment_amount,
+				                'reference_no' => $invoice_reference,
+				                'payment_method' => $bank_account,
+				                'process_date' => $payment_date,
+				                'added_on' => $current_date_and_time,
+				                'added_by' => $currnt_userlogn,
+				                'pay_type' => $pay_type,
+				                'payment_change_deadline' => $payment_refund_deadline
+				            ],
+				            ['%s', '%s', '%s', '%s', '%f', '%s', '%s', '%s', '%s', '%s', '%s', '%s']
+				        );
 						
                         echo '<script>window.location.href="?";</script>';
 				    }
@@ -1843,7 +2611,7 @@ if(!function_exists('gdeal_name_update_ajax'))
                                             <?php
                                             $query_bank_accounts = "SELECT bank_id, account_name FROM wpk4_backend_accounts_bank_account";
                                             $result_bank_accounts = mysqli_query($mysqli, $query_bank_accounts);
-                                            while($row_bank_accounts = mysqli_fetch_assoc($result_bank_accounts))
+                                            foreach ($result_bank_accounts as $row_bank_accounts)
                                             {
                                                 ?>
                                                 <option value="<?php echo $row_bank_accounts['bank_id']; ?>"><?php echo $row_bank_accounts['bank_id']; ?> <?php echo $row_bank_accounts['account_name']; ?></option>
@@ -1861,7 +2629,7 @@ if(!function_exists('gdeal_name_update_ajax'))
                                             <?php
                                             $query_bank_accounts = "SELECT bank_id, account_name FROM wpk4_backend_accounts_bank_account where bank_id IN (3, 12, 9)";
                                             $result_bank_accounts = mysqli_query($mysqli, $query_bank_accounts);
-                                            while($row_bank_accounts = mysqli_fetch_assoc($result_bank_accounts))
+                                            foreach ($result_bank_accounts as $row_bank_accounts)
                                             {
                                                 ?>
                                                 <option value="<?php echo $row_bank_accounts['bank_id']; ?>"><?php echo $row_bank_accounts['bank_id']; ?> <?php echo $row_bank_accounts['account_name']; ?></option>
@@ -1906,12 +2674,38 @@ if(!function_exists('gdeal_name_update_ajax'))
                         else
                         {
 
-                            mysqli_query($mysqli,"insert into wpk4_backend_travel_payment_reconciliation ( process_date, payment_method, amount, remark, added_by ) 
-                            values ('$process_date', '$bank_account_from', '$total_cleared_amount_negative', '$remark', '$currnt_userlogn')") or die(mysqli_error($mysqli));
+                            // Original Query:
+                            // INSERT INTO wpk4_backend_travel_payment_reconciliation 
+                            // (process_date, payment_method, amount, remark, added_by) 
+                            // VALUES (?, ?, ?, ?, ?)
+                            $wpdb->insert(
+                                $wpdb->prefix . 'backend_travel_payment_reconciliation',
+                                [
+                                    'process_date' => $process_date,
+                                    'payment_method' => $bank_account_from,
+                                    'amount' => $total_cleared_amount_negative,
+                                    'remark' => $remark,
+                                    'added_by' => $currnt_userlogn
+                                ],
+                                ['%s', '%s', '%f', '%s', '%s']
+                            );
                         }
                         
-                        mysqli_query($mysqli,"insert into wpk4_backend_travel_payment_reconciliation ( process_date, payment_method, amount, remark, added_by ) 
-                        values ('$process_date', '$bank_account_to', '$amount', '$remark', '$currnt_userlogn')") or die(mysqli_error($mysqli));
+                        // Original Query:
+                        // INSERT INTO wpk4_backend_travel_payment_reconciliation 
+                        // (process_date, payment_method, amount, remark, added_by) 
+                        // VALUES (?, ?, ?, ?, ?)
+                        $wpdb->insert(
+                            $wpdb->prefix . 'backend_travel_payment_reconciliation',
+                            [
+                                'process_date' => $process_date,
+                                'payment_method' => $bank_account_to,
+                                'amount' => $amount,
+                                'remark' => $remark,
+                                'added_by' => $currnt_userlogn
+                            ],
+                            ['%s', '%s', '%f', '%s', '%s']
+                        );
                             
                         echo '<script>window.location.href="?pg=transfer-payment";</script>';
 				    }
@@ -2153,8 +2947,10 @@ if(!function_exists('gdeal_name_update_ajax'))
                                 <select name="bank_account" id="back_account" style="width:100%; padding:10px;" required>
                                     <?php
                                     $query_bank_accounts = "SELECT bank_id, account_name FROM wpk4_backend_accounts_bank_account";
-                                    $result_bank_accounts = mysqli_query($mysqli, $query_bank_accounts);
-                                    while($row_bank_accounts = mysqli_fetch_assoc($result_bank_accounts))
+                        					// Original Query: See $query_bank_accounts variable above
+                        					$query_bank_accounts = str_replace('wpk4_', $wpdb->prefix, $query_bank_accounts);
+                        					$result_bank_accounts = $wpdb->get_results($query_bank_accounts, ARRAY_A);
+                                            foreach ($result_bank_accounts as $row_bank_accounts)
                                     {
                                         ?>
                                         <option <?php if(isset($_GET['bank']) && $_GET['bank'] != '' && $_GET['bank'] == $row_bank_accounts['bank_id'] ) { echo 'selected'; } ?> value="<?php echo $row_bank_accounts['bank_id']; ?>"><?php echo $row_bank_accounts['bank_id']; ?> <?php echo $row_bank_accounts['account_name']; ?></option>
@@ -2484,8 +3280,23 @@ if(!function_exists('gdeal_name_update_ajax'))
 
                                         $result_status= mysqli_query($mysqli,$sql_update_status);
                                                     
-                                        mysqli_query($mysqli,"insert into wpk4_backend_travel_booking_update_history (order_id,merging_id,pax_auto_id,meta_key,meta_value,updated_time,updated_user) 
-                                        values ('$row_order_id','$row_auto_id_pay','','$columnname_db','$post_fieldvalue','$current_date_and_time','$currnt_userlogn')") or die(mysqli_error($mysqli));
+                                        // Original Query:
+                                        // INSERT INTO wpk4_backend_travel_booking_update_history 
+                                        // (order_id, merging_id, pax_auto_id, meta_key, meta_value, updated_time, updated_user) 
+                                        // VALUES (?, ?, ?, ?, ?, ?, ?)
+                                        $wpdb->insert(
+                                            $wpdb->prefix . 'backend_travel_booking_update_history',
+                                            [
+                                                'order_id' => $row_order_id,
+                                                'merging_id' => $row_auto_id_pay,
+                                                'pax_auto_id' => '',
+                                                'meta_key' => $columnname_db,
+                                                'meta_value' => $post_fieldvalue,
+                                                'updated_time' => $current_date_and_time,
+                                                'updated_user' => $currnt_userlogn
+                                            ],
+                                            ['%s', '%s', '%s', '%s', '%s', '%s', '%s']
+                                        );
                                         
                                         if($_GET['bank'] == '12')
                                         {
@@ -2823,8 +3634,10 @@ if(!function_exists('gdeal_name_update_ajax'))
                                 <select name="bank_account" id="back_account" style="width:100%; padding:10px;" required>
                                     <?php
                                     $query_bank_accounts = "SELECT bank_id, account_name FROM wpk4_backend_accounts_bank_account";
-                                    $result_bank_accounts = mysqli_query($mysqli, $query_bank_accounts);
-                                    while($row_bank_accounts = mysqli_fetch_assoc($result_bank_accounts))
+                        					// Original Query: See $query_bank_accounts variable above
+                        					$query_bank_accounts = str_replace('wpk4_', $wpdb->prefix, $query_bank_accounts);
+                        					$result_bank_accounts = $wpdb->get_results($query_bank_accounts, ARRAY_A);
+                                            foreach ($result_bank_accounts as $row_bank_accounts)
                                     {
                                         ?>
                                         <option <?php if(isset($_GET['bank']) && $_GET['bank'] != '' && $_GET['bank'] == $row_bank_accounts['bank_id'] ) { echo 'selected'; } ?> value="<?php echo $row_bank_accounts['bank_id']; ?>"><?php echo $row_bank_accounts['bank_id']; ?> <?php echo $row_bank_accounts['account_name']; ?></option>
@@ -3202,8 +4015,23 @@ if(!function_exists('gdeal_name_update_ajax'))
 
                                         $result_status= mysqli_query($mysqli,$sql_update_status);
                                                     
-                                        mysqli_query($mysqli,"insert into wpk4_backend_travel_booking_update_history (order_id,merging_id,pax_auto_id,meta_key,meta_value,updated_time,updated_user) 
-                                        values ('$row_order_id','$row_auto_id_pay','','$columnname_db','$post_fieldvalue','$current_date_and_time','$currnt_userlogn')") or die(mysqli_error($mysqli));
+                                        // Original Query:
+                                        // INSERT INTO wpk4_backend_travel_booking_update_history 
+                                        // (order_id, merging_id, pax_auto_id, meta_key, meta_value, updated_time, updated_user) 
+                                        // VALUES (?, ?, ?, ?, ?, ?, ?)
+                                        $wpdb->insert(
+                                            $wpdb->prefix . 'backend_travel_booking_update_history',
+                                            [
+                                                'order_id' => $row_order_id,
+                                                'merging_id' => $row_auto_id_pay,
+                                                'pax_auto_id' => '',
+                                                'meta_key' => $columnname_db,
+                                                'meta_value' => $post_fieldvalue,
+                                                'updated_time' => $current_date_and_time,
+                                                'updated_user' => $currnt_userlogn
+                                            ],
+                                            ['%s', '%s', '%s', '%s', '%s', '%s', '%s']
+                                        );
                                         
                                         if($_GET['bank'] == '12')
                                         {
@@ -3541,8 +4369,10 @@ if(!function_exists('gdeal_name_update_ajax'))
                                 <select name="bank_account" id="back_account" style="width:100%; padding:10px;" required>
                                     <?php
                                     $query_bank_accounts = "SELECT bank_id, account_name FROM wpk4_backend_accounts_bank_account";
-                                    $result_bank_accounts = mysqli_query($mysqli, $query_bank_accounts);
-                                    while($row_bank_accounts = mysqli_fetch_assoc($result_bank_accounts))
+                        					// Original Query: See $query_bank_accounts variable above
+                        					$query_bank_accounts = str_replace('wpk4_', $wpdb->prefix, $query_bank_accounts);
+                        					$result_bank_accounts = $wpdb->get_results($query_bank_accounts, ARRAY_A);
+                                            foreach ($result_bank_accounts as $row_bank_accounts)
                                     {
                                         ?>
                                         <option <?php if(isset($_GET['bank']) && $_GET['bank'] != '' && $_GET['bank'] == $row_bank_accounts['bank_id'] ) { echo 'selected'; } ?> value="<?php echo $row_bank_accounts['bank_id']; ?>"><?php echo $row_bank_accounts['bank_id']; ?> <?php echo $row_bank_accounts['account_name']; ?></option>
@@ -3899,8 +4729,23 @@ if(!function_exists('gdeal_name_update_ajax'))
 
                                         $result_status= mysqli_query($mysqli,$sql_update_status);
                                                     
-                                        mysqli_query($mysqli,"insert into wpk4_backend_travel_booking_update_history (order_id,merging_id,pax_auto_id,meta_key,meta_value,updated_time,updated_user) 
-                                        values ('$row_order_id','$row_auto_id_pay','','$columnname_db','$post_fieldvalue','$current_date_and_time','$currnt_userlogn')") or die(mysqli_error($mysqli));
+                                        // Original Query:
+                                        // INSERT INTO wpk4_backend_travel_booking_update_history 
+                                        // (order_id, merging_id, pax_auto_id, meta_key, meta_value, updated_time, updated_user) 
+                                        // VALUES (?, ?, ?, ?, ?, ?, ?)
+                                        $wpdb->insert(
+                                            $wpdb->prefix . 'backend_travel_booking_update_history',
+                                            [
+                                                'order_id' => $row_order_id,
+                                                'merging_id' => $row_auto_id_pay,
+                                                'pax_auto_id' => '',
+                                                'meta_key' => $columnname_db,
+                                                'meta_value' => $post_fieldvalue,
+                                                'updated_time' => $current_date_and_time,
+                                                'updated_user' => $currnt_userlogn
+                                            ],
+                                            ['%s', '%s', '%s', '%s', '%s', '%s', '%s']
+                                        );
                                         
                                         if($_GET['bank'] == '12')
                                         {
@@ -5877,8 +6722,11 @@ if(!function_exists('gdeal_name_update_ajax'))
             		   //echo $query;	
             		}
             		$selection_query = $query;
-            		$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-            		$row_counter_ticket = mysqli_num_rows($result);
+            		// Original Query: Dynamic SELECT query (see above for full query)
+            		// Convert table prefix
+            		$query = str_replace('wpk4_', $wpdb->prefix, $query);
+            		$result = $wpdb->get_results($query, ARRAY_A);
+            		$row_counter_ticket = count($result);
             		$auto_numbering = 1;
             		$total_paxs = 0;
             		
@@ -5900,7 +6748,7 @@ if(!function_exists('gdeal_name_update_ajax'))
                     	    <form action="#" name="statusupdate" method="post" enctype="multipart/form-data">
                         		<?php
                                 $processedOrders = [];
-                        		while($row = mysqli_fetch_assoc($result))
+                        		foreach ($result as $row)
                         		{
                         			$auto_id = $row['auto_id'];
                         			
@@ -5939,8 +6787,8 @@ if(!function_exists('gdeal_name_update_ajax'))
                                             <?php 
                                             $query_payment_method = "SELECT account_name FROM wpk4_backend_accounts_bank_account where bank_id = $payment_method";
                                         		$result_payment_method = mysqli_query($mysqli, $query_payment_method) or die(mysqli_error($mysqli));
-                                        		$row_payment_method = mysqli_fetch_assoc($result_payment_method);
-                                    		    if(mysqli_num_rows($result_payment_method) > 0)
+                                        		$row_payment_method = !empty($result_payment_method) ? $result_payment_method[0] : null;
+                                    		    if (!empty($result_payment_method))
                                     		    {
                                     		        echo $row_payment_method['account_name'];  
                                     		    }
@@ -6046,4 +6894,82 @@ if(!function_exists('gdeal_name_update_ajax'))
         }
         ?>
     </div>
-<?php get_footer(); ?>
+<?php 
+/**
+ * ============================================
+ * POSTMAN TEST EXAMPLES
+ * ============================================
+ * 
+ * 1. Create Bank Account
+ *    Method: POST
+ *    URL: {{base_url}}/v1/accounting/bank-accounts
+ *    Body (JSON):
+ *      {
+ *        "bank_id": "15",
+ *        "bank_account_name": "Test Bank Account",
+ *        "bank_branch": "Melbourne Branch",
+ *        "bank_account_number": "1234567890"
+ *      }
+ * 
+ * 2. List Bank Accounts
+ *    Method: GET
+ *    URL: {{base_url}}/v1/accounting/bank-accounts
+ * 
+ * 3. List Payment Records
+ *    Method: GET
+ *    URL: {{base_url}}/v1/accounting/payments?payment_date=2024-01-01&payment_method=8&order_id=123456&amount=100-200
+ *    Query Parameters (all optional):
+ *      - payment_date: 2024-01-01
+ *      - order_date: 2024-01-01
+ *      - reference_no: REF123
+ *      - amount: 100 (exact) or 99-101 (range)
+ *      - payment_method: 8
+ *      - booking_source: WPT|gds
+ *      - order_id: 123456 (or PNR)
+ *      - profile_id: PROFILE123
+ *      - email_phone: user@example.com
+ *      - pnr_ticket: PNR123
+ *      - payment_type: deposit|balance|dc_charge|additional_payment|deposit_adjustment|refund|other
+ *      - clear_date: 2024-01-01
+ * 
+ * 4. Update Payment History
+ *    Method: PATCH
+ *    URL: {{base_url}}/v1/accounting/payments/123
+ *    Body (JSON):
+ *      {
+ *        "field_name": "trams_remarks",
+ *        "field_value": "Updated remarks",
+ *        "cleared": true
+ *      }
+ * 
+ * 5. Create Payment Reconciliation
+ *    Method: POST
+ *    URL: {{base_url}}/v1/accounting/payment-reconciliation
+ *    Body (JSON):
+ *      {
+ *        "process_date": "2024-01-01",
+ *        "payment_method": "12",
+ *        "amount": 1000.50,
+ *        "remark": "Monthly reconciliation"
+ *      }
+ * 
+ * 6. Get Bank Reconciliation Data
+ *    Method: GET
+ *    URL: {{base_url}}/v1/accounting/bank-reconciliation?bank=12&from=2024-01-01&to=2024-01-31
+ *    Query Parameters (all required):
+ *      - bank: 12 (bank ID)
+ *      - from: 2024-01-01 (start date)
+ *      - to: 2024-01-31 (end date)
+ * 
+ *    Response:
+ *    {
+ *      "status": "success",
+ *      "data": {
+ *        "payment_records": [...],
+ *        "total_cleared_amount": 5000.00,
+ *        "initial_outstanding_amount": 1000.00
+ *      },
+ *      "message": "Bank reconciliation data retrieved successfully"
+ *    }
+ */
+get_footer(); ?>

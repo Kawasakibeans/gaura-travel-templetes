@@ -1,6 +1,6 @@
 <?php
 /**
- * Template Name: Manage Whatsapp Chat
+ * Template Name: Manage Whatsapp Chat-tanvi
  * Template Post Type: post, page
  *
  * @package WordPress
@@ -8,7 +8,7 @@
  * @since Twenty Twenty 1.0
  * @author Sriharshan
  */
-get_header(); 
+get_header();
 global $current_user;
 if(isset($current_user) && $current_user->user_login != '')
 {
@@ -20,8 +20,25 @@ else
 }
 require_once 'wp-config-custom.php';
 
-$apiUrl = 'https://gauratravel.com.au/wp-content/themes/twentytwenty/templates/tpl_admin_backend_for_credential_pass_main.php';
-$ch = curl_init($apiUrl);
+// Check if PDO connection was established
+// if (!isset($pdo) || $pdo === null) {
+//     // Try to establish a new PDO connection
+//     try {
+//         $host = 'localhost';
+//         $dbname = 'gaurat_gauratravel';
+//         $username = 'gaurat_harshal';
+//         $password = 'Ad,zp))B8HcDZuz7+!';
+        
+//         $pdo = new PDO("mysql:host=$host;dbname=$dbname", $username, $password);
+//         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+//     } catch (PDOException $e) {
+//         die("Database connection failed: " . $e->getMessage());
+//     }
+// }
+
+// Load settings from API endpoint (existing logic)
+ $apiUrl = 'https://gauratravel.com.au/wp-content/themes/twentytwenty/templates/tpl_admin_backend_for_credential_pass_main.php';
+ $ch = curl_init($apiUrl);
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_FOLLOWLOCATION => true,
@@ -32,9 +49,9 @@ curl_setopt_array($ch, [
     CURLOPT_SSL_VERIFYPEER => true,   // keep true in prod
     CURLOPT_SSL_VERIFYHOST => 2,      // keep strict
 ]);
-$body = curl_exec($ch);
-$http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$err  = curl_error($ch);
+ $body = curl_exec($ch);
+ $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+ $err  = curl_error($ch);
 curl_close($ch);
 
 if ($body === false) {
@@ -45,7 +62,7 @@ if ($http !== 200) {
     die("Settings endpoint HTTP $http.\n".substr($body, 0, 500));
 }
 
-$resp = json_decode($body, true);
+ $resp = json_decode($body, true);
 if (json_last_error() !== JSON_ERROR_NONE) {
     die("Invalid JSON: ".json_last_error_msg()."\n".substr($body, 0, 500));
 }
@@ -53,23 +70,25 @@ if (!is_array($resp) || empty($resp['success'])) {
     die("Invalid settings response shape.\n".substr($body, 0, 500));
 }
 
-$settings = $resp['data'] ?? [];
+ $settings = $resp['data'] ?? [];
 foreach ($settings as $k => $v) {
     if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $k)) {
         $GLOBALS[$k] = $v;
     }
 }
 
-$contactStmt = $pdo->query("
-  SELECT number FROM (
-    SELECT sender_id AS number, MAX(id) AS last_id FROM whatsapp_messages WHERE sender_type = 'customer' and sender_id != '$WHATSAPP_API_PHONE_NUMBER' GROUP BY sender_id
-    UNION
-    SELECT recipient_id AS number, MAX(id) AS last_id FROM whatsapp_messages WHERE sender_type = 'customer' and recipient_id != '$WHATSAPP_API_PHONE_NUMBER' GROUP BY recipient_id
-  ) AS contacts
-  ORDER BY last_id DESC
-");
-$existingContacts = $contactStmt->fetchAll(PDO::FETCH_COLUMN);
+//  $contactStmt = $pdo->query("
+//   SELECT number FROM (
+//     SELECT sender_id AS number, MAX(id) AS last_id FROM whatsapp_messages WHERE sender_type = 'customer' and sender_id != '$WHATSAPP_API_PHONE_NUMBER' GROUP BY sender_id
+//     UNION
+//     SELECT recipient_id AS number, MAX(id) AS last_id FROM whatsapp_messages WHERE sender_type = 'customer' and recipient_id != '$WHATSAPP_API_PHONE_NUMBER' GROUP BY recipient_id
+//   ) AS contacts
+//   ORDER BY last_id DESC
+// ");
+//  $existingContacts = $contactStmt->fetchAll(PDO::FETCH_COLUMN);
 
+// Define API Base URL for JavaScript and pass it via a data attribute
+ $apiBaseUrlForJs = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public';
 ?>
 <style>
 .chat-bubble {
@@ -115,9 +134,24 @@ $existingContacts = $contactStmt->fetchAll(PDO::FETCH_COLUMN);
   background-color: #ddd;
 }
 
+/* New style for passenger details table */
+.passenger-details-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+.passenger-details-table th, .passenger-details-table td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+.passenger-details-table th {
+    background-color: #f2f2f2;
+}
 </style>
 </br></br>
-<div id="whatsapp-wrapper" style="display: flex; height: 80vh; width: 95%; margin: auto; border: 1px solid #ccc; font-family: sans-serif;">
+<!-- Pass API Base URL to JavaScript via data attribute -->
+<div id="whatsapp-wrapper" style="display: flex; height: 80vh; width: 95%; margin: auto; border: 1px solid #ccc; font-family: sans-serif;" data-api-base-url="<?= htmlspecialchars($apiBaseUrlForJs) ?>">
 
     <div id="sidebar" style="width: 100%; border-right: 1px solid #ccc; background: #f0f0f0; overflow-y: auto;">
         <div style="padding: 15px; margin: 0; background: #075E54; color: white; display: flex; justify-content: space-between; align-items: center;">
@@ -153,7 +187,10 @@ $existingContacts = $contactStmt->fetchAll(PDO::FETCH_COLUMN);
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://code.jquery.com/ui/1.13.0/jquery-ui.min.js"></script>
 <script>
-$(document).on('click', '.expand-btn', function() {
+// Get API Base URL from data attribute on wrapper div
+const apiBaseUrl = $('#whatsapp-wrapper').data('api-base-url');
+
+ $(document).on('click', '.expand-btn', function() {
   var button = $(this);
   var autoId = button.data('target').replace('expand_', '');
   var targetRow = $('#expand_' + autoId);
@@ -168,18 +205,79 @@ $(document).on('click', '.expand-btn', function() {
 
     contentDiv.html('<center><h4><em>Loading...</em></h4></center>');
 
-    $.ajax({
-      url: '/wp-content/themes/twentytwenty/templates/tpl_manage_ticketing_g360.php',
-      type: 'POST',
-      data: { auto_id: autoId },
-      success: function(response) {
-        contentDiv.html(response);
-      },
-      error: function(xhr, status, error) {
-        contentDiv.html('<span style="color:red;">Error loading data</span>');
-        console.error('AJAX Error:', status, error);
+    // --- REFACTORED LOGIC WITH FALLBACK ---
+    // Try multiple possible endpoint variations
+    const endpointVariations = [
+      `${apiBaseUrl}/v1/whatsapp/passengers/${autoId}/details`,
+      `${apiBaseUrl}/v1/passengers/${autoId}/details`,
+      `${apiBaseUrl}/v1/whatsapp/passenger/${autoId}`,
+      `${apiBaseUrl}/v1/passenger/${autoId}`
+    ];
+    
+    // Try each endpoint until one works
+    let endpointIndex = 0;
+    
+    function tryNextEndpoint() {
+      if (endpointIndex >= endpointVariations.length) {
+        // All API endpoints failed, use fallback
+        console.log('All API endpoints failed, using fallback method');
+        useFallbackMethod();
+        return;
       }
-    });
+      
+      const currentEndpoint = endpointVariations[endpointIndex];
+      console.log(`Trying endpoint: ${currentEndpoint}`);
+      
+      $.ajax({
+        url: currentEndpoint,
+        type: 'GET',
+        dataType: 'json',
+        success: function(response) {
+          // Build HTML from JSON response
+          let html = '<table class="passenger-details-table"><tbody>';
+          if (response && typeof response === 'object') {
+              for (const key in response) {
+                  if (response.hasOwnProperty(key)) {
+                      // Format the key to be more readable
+                      const formattedKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                      html += `<tr><td><strong>${formattedKey}</strong></td><td>${response[key]}</td></tr>`;
+                  }
+              }
+          } else {
+              html = '<p>No passenger details found.</p>';
+          }
+          html += '</tbody></table>';
+          contentDiv.html(html);
+        },
+        error: function(xhr, status, error) {
+          console.error(`API endpoint ${currentEndpoint} failed:`, status, error, xhr.responseText);
+          endpointIndex++;
+          tryNextEndpoint();
+        }
+      });
+    }
+    
+    function useFallbackMethod() {
+      // --- FALLBACK: Original AJAX call ---
+      const fallbackUrl = '/wp-content/themes/twentytwenty/templates/tpl_manage_ticketing_g360.php';
+      
+      $.ajax({
+        url: fallbackUrl,
+        type: 'POST',
+        data: { auto_id: autoId },
+        success: function(response) {
+          contentDiv.html(response);
+        },
+        error: function(xhr, status, error) {
+          // If the fallback also fails, show a final error message
+          contentDiv.html('<span style="color:red;">Error loading data from both API and fallback.</span>');
+          console.error('Fallback AJAX Error:', status, error);
+        }
+      });
+    }
+    
+    // Start trying endpoints
+    tryNextEndpoint();
   }
 });
 
@@ -200,8 +298,6 @@ document.getElementById('addContactBtn').addEventListener('click', function () {
   })
   .then(res => res.json())
   .then(contact => {
-      
-      
       console.log(contact);
     if (!contact || !contact.contact) {
       alert('Error adding contact or contact already exists.');
@@ -360,15 +456,6 @@ function loadChat() {
             })()}
           </div>
         `;
-
-
-
-        
-        /*bubble.innerHTML = `
-          <div>${content}</div>
-          <div style="text-align: ${align}; font-size: 11px; color: #555; margin-top: 5px;">${time}</div>
-        `;*/
-
         box.appendChild(bubble);
       });
 
@@ -377,12 +464,7 @@ function loadChat() {
     });
 }
 
-
-
-
 // Chat form submission including attachment
-
-
 let lastTimestamp = null;
 
 function watchForUpdates() {
@@ -491,7 +573,7 @@ function loadContacts() {
                   source_pcc = 'Amadeus MELA828FN';
                   break;
                 case 'shelltechb2bin':
-                  source_pcc = 'SABRE 1BIK';
+                  source_pcc = 'Sabre 1BIK';
                   break;
                 case 'shelltechb2bndcxin':
                   source_pcc = 'Amadeus CCUVS32NQ';
@@ -620,7 +702,6 @@ function openChatPopup(number, orderId) {
 
         <button type="submit" style="align-self: flex-end; background: #25D366; border: none; color: white; padding: 10px 20px; border-radius: 20px; font-weight: bold;">Send</button>
 
-        
       </form>
     </div>
   `;
@@ -652,9 +733,6 @@ function openChatPopup(number, orderId) {
     if (fileInput.files.length > 0) {
       formData.append('file', fileInput.files[0]);
     } else {
-      //formData.append('message', message);
-      //formData.append('message', `Gaura OrderID: ${selectedOrderId}\n{\n${message}\n}`);
-        
         let finalMessage = message;
 
         if (selectedOrderId && selectedOrderId.trim() !== "") {
@@ -662,8 +740,6 @@ function openChatPopup(number, orderId) {
         }
         
         formData.append("message", finalMessage);
-
-
     }
 
     fetch('/wp-content/themes/twentytwenty/templates/tpl_whatsapp_chat_event_handler.php', {
@@ -706,9 +782,5 @@ function closeChatPopup() {
   selectedCustomer = null;
   selectedOrderId = null;
 }
-
-
-
-
 </script>
 <?php get_footer(); ?>

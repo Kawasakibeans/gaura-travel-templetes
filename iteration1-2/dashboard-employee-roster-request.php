@@ -7,51 +7,247 @@
 get_header();
 global $wpdb;
 
-$roster_table = $wpdb->prefix . 'backend_employee_roster';
-$agent_codes_table = $wpdb->prefix . 'backend_agent_codes';
-$roster_requests_table = $wpdb->prefix . 'manage_roster_requests';
+// Base URL for API endpoints
+$api_base_url = "https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1";
 
-$selected_month = isset($_GET['month']) 
+// Ensure api_base_url is available in GLOBALS for functions
+$GLOBALS['api_base_url'] = $api_base_url;
+
+// Function to make GET requests to API
+function api_get($endpoint) {
+    $url = $GLOBALS['api_base_url'] . $endpoint;
+    $response = wp_remote_get($url);
+    
+    if (is_wp_error($response)) {
+        return ['status' => 'error', 'message' => $response->get_error_message(), 'data' => null];
+    }
+    
+    $body = wp_remote_retrieve_body($response);
+    $data = json_decode($body, true);
+    
+    if (!$data || !isset($data['status'])) {
+        return ['status' => 'error', 'message' => 'Invalid API response', 'data' => null];
+    }
+    
+    return $data;
+}
+
+// Function to make POST requests to API
+function api_post($endpoint, $body) {
+    $url = $GLOBALS['api_base_url'] . $endpoint;
+    $args = [
+        'method' => 'POST',
+        'headers' => [
+            'Content-Type' => 'application/json',
+        ],
+        'body' => json_encode($body),
+    ];
+    
+    $response = wp_remote_post($url, $args);
+    
+    if (is_wp_error($response)) {
+        return ['status' => 'error', 'message' => $response->get_error_message(), 'data' => null];
+    }
+    
+    $response_body = wp_remote_retrieve_body($response);
+    $data = json_decode($response_body, true);
+    
+    if (!$data || !isset($data['status'])) {
+        return ['status' => 'error', 'message' => 'Invalid API response', 'data' => null];
+    }
+    
+    return $data;
+}
+
+ $selected_month = isset($_GET['month']) 
     ? sanitize_text_field($_GET['month']) 
     : date('F');
+ 
+// Allow manual username override via URL parameter (for testing/debugging)
+// Use ?username=xxx in URL to specify a WordPress username
 $current_user = wp_get_current_user();
-$current_user_login = $current_user->user_login;
+$current_user_login = isset($_GET['username']) && !empty($_GET['username'])
+    ? sanitize_text_field($_GET['username'])
+    : $current_user->user_login;
 
-$agent_data_row = $wpdb->get_row($wpdb->prepare(
-    "SELECT agent_name FROM $agent_codes_table WHERE wordpress_user_name = %s",
-    $current_user_login
-));
+// Get agent information via API instead of direct database query
+$agent_info = null;
+$username = '';
+$roster_code = '';
 
-if (!$agent_data_row) {
-    echo "<div style='padding:20px;color:red;'>No matching agent found for user: <strong>" . esc_html($current_user_login) . "</strong></div>";
+// Try to get agent info from API
+$api_response = api_get("/employee-schedule/agent-by-user?wordpress_user_name=" . urlencode($current_user_login));
+
+// Handle different API response structures
+$agent_info = null;
+if ($api_response['status'] === 'success' && isset($api_response['data'])) {
+    // Check if data is a single agent object
+    if (isset($api_response['data']['agent'])) {
+        $agent_info = $api_response['data']['agent'];
+    }
+    // Check if data is an array of agents (find matching one)
+    elseif (is_array($api_response['data']) && isset($api_response['data'][0])) {
+        // Find agent with matching wordpress_user_name
+        foreach ($api_response['data'] as $agent) {
+            if (isset($agent['wordpress_user_name']) && $agent['wordpress_user_name'] === $current_user_login) {
+                $agent_info = $agent;
+                break;
+            }
+        }
+    }
+    // Check if data is directly an agent object
+    elseif (is_array($api_response['data']) && isset($api_response['data']['wordpress_user_name'])) {
+        $agent_info = $api_response['data'];
+    }
+}
+
+if ($agent_info) {
+    $username = $agent_info['agent_name'] ?? '';
+    $roster_code = $agent_info['roster_code'] ?? '';
+    
+    // Debug output if requested
+    if (isset($_GET['debug'])) {
+        echo "<div style='padding:15px;background:#d4edda;border:1px solid #c3e6cb;border-radius:5px;margin:10px;'>";
+        echo "<strong>✅ Agent Info Retrieved Successfully:</strong><br>";
+        echo "Username: <strong>" . esc_html($username) . "</strong><br>";
+        echo "Roster Code: <strong>" . esc_html($roster_code) . "</strong><br>";
+        echo "Agent Name: <strong>" . esc_html($agent_info['agent_name'] ?? 'N/A') . "</strong><br>";
+        echo "TSR: <strong>" . esc_html($agent_info['tsr'] ?? 'N/A') . "</strong><br>";
+        echo "</div>";
+    }
+} else {
+    // If API fails or agent not found, show error message
+    $error_message = $api_response['message'] ?? 'Unknown error';
+    $api_status = $api_response['status'] ?? 'unknown';
+    
+    // Determine if this is an API error or just no agent found
+    $is_api_error = ($api_status === 'error' || !isset($api_response['status']));
+    $is_no_agent = ($api_status === 'success' && (!isset($api_response['data']) || empty($api_response['data'])));
+    
+    echo "<div style='padding:30px;color:#333;margin-top:100px;max-width:800px;margin-left:auto;margin-right:auto;background:#fff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);'>";
+    echo "<div style='text-align:center;margin-bottom:20px;'>";
+    
+    if ($is_api_error) {
+        echo "<i class='fas fa-exclamation-triangle' style='font-size:48px;color:#dc3545;margin-bottom:15px;'></i>";
+        echo "<h3 style='color:#dc3545;margin-bottom:10px;'>API Error</h3>";
+    } else {
+        echo "<i class='fas fa-user-slash' style='font-size:48px;color:#6c757d;margin-bottom:15px;'></i>";
+        echo "<h3 style='color:#495057;margin-bottom:10px;'>Access Restricted</h3>";
+    }
+    
+    echo "</div>";
+    
+    echo "<div style='background:#f8f9fa;padding:20px;border-radius:5px;margin-bottom:20px;'>";
+    echo "<p style='margin-bottom:10px;'><strong>WordPress Username:</strong> <code style='background:#fff;padding:2px 8px;border-radius:3px;'>" . esc_html($current_user_login) . "</code></p>";
+    
+    // Show if username was manually specified
+    if (isset($_GET['username']) && !empty($_GET['username'])) {
+        echo "<p style='margin-bottom:10px;'><small style='color:#6c757d;'><i class='fas fa-info-circle'></i> Username was manually specified via URL parameter</small></p>";
+    }
+    
+    if ($is_api_error) {
+        echo "<p style='margin-bottom:10px;'><strong>API Status:</strong> <span style='color:#dc3545;'>" . esc_html($api_status) . "</span></p>";
+        echo "<p style='margin-bottom:10px;'><strong>Error Message:</strong> <span style='color:#dc3545;'>" . esc_html($error_message) . "</span></p>";
+    } else {
+        echo "<p style='margin-bottom:10px;'><strong>Status:</strong> <span style='color:#6c757d;'>Your account is not associated with an agent profile</span></p>";
+        echo "<p style='margin-bottom:0;color:#6c757d;'><em>This page is designed for employees who have agent profiles in the roster system. If you believe you should have access, please contact your administrator.</em></p>";
+    }
+    echo "</div>";
+    
+    if (!$is_api_error) {
+        echo "<div style='background:#e7f3ff;padding:15px;border-left:4px solid #0d6efd;border-radius:4px;margin-bottom:20px;'>";
+        echo "<h5 style='margin-top:0;color:#004085;'><i class='fas fa-info-circle'></i> About This Page</h5>";
+        echo "<p style='margin-bottom:5px;color:#004085;'>The Employee Roster Request page is specifically designed for agents who need to:</p>";
+        echo "<ul style='color:#004085;padding-left:20px;margin-bottom:0;'>";
+        echo "<li>View their work schedule</li>";
+        echo "<li>Request shift changes</li>";
+        echo "<li>Request RDO (Rostered Day Off) changes</li>";
+        echo "<li>Request leave</li>";
+        echo "</ul>";
+        echo "</div>";
+        
+        echo "<div style='background:#fff3cd;padding:15px;border-left:4px solid #ffc107;border-radius:4px;margin-bottom:20px;'>";
+        echo "<h5 style='margin-top:0;color:#856404;'><i class='fas fa-question-circle'></i> Need Access?</h5>";
+        echo "<p style='margin-bottom:5px;color:#856404;'>If you are an agent and need access to this page:</p>";
+        echo "<ol style='color:#856404;padding-left:20px;margin-bottom:0;'>";
+        echo "<li>Contact your system administrator or HR department</li>";
+        echo "<li>Request that your WordPress username (<code>" . esc_html($current_user_login) . "</code>) be linked to your agent profile</li>";
+        echo "<li>The administrator needs to update the agent record with your WordPress username in the <code>wordpress_user_name</code> field</li>";
+        echo "<li>Ensure your agent status is set to <code>active</code> in the system</li>";
+        echo "</ol>";
+        echo "</div>";
+    } else {
+        echo "<div style='background:#fff3cd;padding:15px;border-left:4px solid #ffc107;border-radius:4px;margin-bottom:20px;'>";
+        echo "<h5 style='margin-top:0;color:#856404;'><i class='fas fa-exclamation-triangle'></i> API Connection Issue</h5>";
+        echo "<p style='margin-bottom:5px;color:#856404;'>There was an error connecting to the API. This could be due to:</p>";
+        echo "<ul style='color:#856404;padding-left:20px;margin-bottom:0;'>";
+        echo "<li>Network connectivity issues</li>";
+        echo "<li>API server being temporarily unavailable</li>";
+        echo "<li>Configuration problems</li>";
+        echo "</ul>";
+        echo "<p style='margin-top:10px;margin-bottom:0;color:#856404;'><small>Please try again later or contact technical support if the problem persists.</small></p>";
+        echo "</div>";
+    }
+    
+    // Show debug info if requested
+    if (isset($_GET['debug'])) {
+        echo "<hr style='margin:30px 0;border-color:#ddd;'>";
+        echo "<details style='background:#f8f9fa;padding:15px;border-radius:5px;'>";
+        echo "<summary style='cursor:pointer;font-weight:bold;color:#495057;'><i class='fas fa-bug'></i> Technical Debug Information</summary>";
+        echo "<div style='margin-top:15px;'>";
+        echo "<div style='background:#d1ecf1;padding:10px;border-left:4px solid #0c5460;border-radius:4px;margin-bottom:15px;'>";
+        echo "<p style='margin:0;color:#0c5460;'><strong><i class='fas fa-lightbulb'></i> Testing Tip:</strong> You can test different usernames by adding <code>?username=xxx</code> to the URL. For example: <code>?username=MayuriPM</code> or <code>?username=MayuriPM&debug=1</code></p>";
+        echo "</div>";
+        echo "<p><strong>WordPress Username:</strong> " . esc_html($current_user_login) . (isset($_GET['username']) ? " <small style='color:#6c757d;'>(manually specified)</small>" : " <small style='color:#6c757d;'>(from logged-in user)</small>") . "</p>";
+        echo "<p><strong>API Endpoint:</strong> <code>/v1/employee-schedule/agent-by-user</code></p>";
+        echo "<p><strong>API URL:</strong> <code>" . esc_html($GLOBALS['api_base_url'] . "/employee-schedule/agent-by-user?wordpress_user_name=" . urlencode($current_user_login)) . "</code></p>";
+        echo "<p><strong>API Response Status:</strong> " . esc_html($api_response['status'] ?? 'unknown') . "</p>";
+        echo "<p><strong>API Response Message:</strong> " . esc_html($api_response['message'] ?? 'none') . "</p>";
+        echo "<p><strong>API Response Data Type:</strong> " . (isset($api_response['data']) ? gettype($api_response['data']) : 'not set') . "</p>";
+        if (isset($api_response['data'])) {
+            if (is_array($api_response['data']) && isset($api_response['data'][0])) {
+                echo "<p><strong>Data is array with " . count($api_response['data']) . " items</strong></p>";
+                echo "<p><strong>First item keys:</strong> " . implode(', ', array_keys($api_response['data'][0])) . "</p>";
+            }
+        }
+        echo "<p><strong>Full API Response:</strong></p>";
+        echo "<pre style='background:#fff;padding:10px;border:1px solid #ddd;border-radius:4px;overflow:auto;max-height:300px;'>" . htmlspecialchars(print_r($api_response, true)) . "</pre>";
+        echo "<p><strong>Database Query (from API):</strong></p>";
+        echo "<pre style='background:#fff;padding:10px;border:1px solid #ddd;border-radius:4px;'>SELECT * FROM wpk4_backend_agent_codes WHERE wordpress_user_name = '" . esc_html($current_user_login) . "' AND status = 'active' LIMIT 1</pre>";
+        echo "</div>";
+        echo "</details>";
+    } else {
+        echo "<p style='text-align:center;margin-top:20px;color:#6c757d;'>";
+        echo "<small>Add <code>?debug=1</code> to the URL for technical debug information. ";
+        echo "You can also test different usernames with <code>?username=xxx</code> parameter.</small>";
+        echo "</p>";
+    }
+    
+    echo "</div>";
     get_footer();
     exit;
 }
 
-$username = $agent_data_row->agent_name;
+ $agent_data = null;
+ $employee_name = '';
+ $sale_manager = '';
+ $current_shift = 'NA';
+ $current_rdo = 'NA';
 
-$agent_data = null;
-$employee_name = '';
-$sale_manager = '';
-$current_shift = 'NA';
-$current_rdo = 'NA';
-
-$day_mapping = [
+ $day_mapping = [
     'mon' => 'Monday', 'tue' => 'Tuesday', 'wed' => 'Wednesday',
     'thu' => 'Thursday', 'fri' => 'Friday', 'sat' => 'Saturday', 'sun' => 'Sunday'
 ];
 
-
-
 // 1. Default to current month if not set
-$selected_month = isset($_GET['month']) 
+ $selected_month = isset($_GET['month']) 
     ? sanitize_text_field($_GET['month']) 
-    : date('F', strtotime('first day of this monthh'));
+    : date('F', strtotime('first day of this month'));
 
 // 2. Get current and next month names
-$current_month_name = date('F');
-$currentMonthNumber = date('m');
-$next_month_name = date('F', strtotime('first day of next month'));
+ $current_month_name = date('F');
+ $currentMonthNumber = date('m');
+ $next_month_name = date('F', strtotime('first day of next month'));
 
 // 3. Determine the target month
 if ($selected_month === 'current') {
@@ -63,75 +259,149 @@ if ($selected_month === 'current') {
 }
 
 // 4. Build an array of month names (next 12 months)
-$months = [];
+ $months = [];
 for ($i = 0; $i < 12; $i++) {
     $months[] = date('F', strtotime("+$i month"));
 }
 
-
-$agent_record = $wpdb->get_row($wpdb->prepare(
-    "SELECT * FROM $agent_codes_table WHERE agent_name LIKE %s",
-    $username
-));
-
-if ($agent_record) {
-    $roster_code = $agent_record->roster_code;
-    $agent_data = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $roster_table WHERE employee_code = %s AND month = %s",
-        $roster_code,
-        $selected_month
-    ));
-}
-
-
-if ($agent_data) {
-        $sale_manager = $agent_data->sm ?? '';
-        $current_shift = $agent_data->shift_time ?? 'NA';
-        if (preg_match('/^\d{4}$/', $current_shift)) {
-            $current_shift = substr($current_shift, 0, 2) . ':' . substr($current_shift, 2);
+// Use roster_code from API response (already obtained above)
+if (empty($roster_code)) {
+    echo "<div style='padding:20px;color:orange;background:#fff3cd;border:1px solid #ffc107;border-radius:5px;margin:20px;'>";
+    echo "<h5 style='color:#856404;margin-top:0;'><i class='fas fa-exclamation-triangle'></i> Warning: No Roster Code</h5>";
+    echo "<p style='margin-bottom:0;'>No roster code found for agent: <strong>" . esc_html($username) . "</strong></p>";
+    echo "<p style='margin-bottom:0;'><small>Please ensure your agent profile has a roster code configured.</small></p>";
+    echo "</div>";
+} else {
+    // 1. Get Employee Roster Data using API
+    $api_response = api_get("/roster/employees/{$roster_code}?month={$selected_month}");
+    
+    // Debug: Log API response
+    if (isset($_GET['debug'])) {
+        echo "<div style='padding:20px;background:#f0f0f0;margin:10px;border:1px solid #ddd;'>";
+        echo "<strong>Roster API Debug Info:</strong><br>";
+        echo "Username: " . esc_html($username) . "<br>";
+        echo "Roster Code: " . esc_html($roster_code) . "<br>";
+        echo "Selected Month: " . esc_html($selected_month) . "<br>";
+        echo "API URL: " . esc_html($GLOBALS['api_base_url'] . "/roster/employees/{$roster_code}?month={$selected_month}") . "<br>";
+        echo "API Status: " . esc_html($api_response['status'] ?? 'unknown') . "<br>";
+        echo "API Message: " . esc_html($api_response['message'] ?? 'none') . "<br>";
+        echo "Has Data: " . (isset($api_response['data']) && !empty($api_response['data']) ? 'Yes' : 'No') . "<br>";
+        if (isset($api_response['data'])) {
+            echo "Data Type: " . gettype($api_response['data']) . "<br>";
+            if (is_array($api_response['data'])) {
+                echo "Data Count: " . count($api_response['data']) . "<br>";
+                if (!empty($api_response['data'])) {
+                    echo "Data Keys: " . implode(', ', array_keys($api_response['data'])) . "<br>";
+                }
+            }
         }
-        $rdo_day = strtolower($agent_data->rdo ?? '');
-        $current_rdo = isset($day_mapping[strtolower($agent_data->rdo)]) 
-                      ? $day_mapping[strtolower($agent_data->rdo)] 
-                      : 'NA';
-                      
-        $is_confirmed = false;
-        if (!empty($roster_code)) {
-            $confirmation_status = $wpdb->get_var($wpdb->prepare(
-                "SELECT confirm FROM $roster_table 
-                 WHERE employee_code = %s and month = '%s'
-                 LIMIT 1",
-                $roster_code,$selected_month
-            ));
-            $is_confirmed = ((int) $confirmation_status == 1);
-        }
-        
-        // Get the current month and year
-        $current_month = $agent_data->month ?? date('m');
-        $current_year = $agent_data->year ?? date('Y');
+        echo "<strong>Full API Response:</strong><br>";
+        echo "<pre style='background:#fff;padding:10px;border:1px solid #ddd;max-height:400px;overflow:auto;'>" . htmlspecialchars(print_r($api_response, true)) . "</pre>";
+        echo "</div>";
     }
+    
+    // Handle different API response scenarios
+    if ($api_response['status'] === 'success') {
+        // API call succeeded
+        if (isset($api_response['data']) && !empty($api_response['data'])) {
+            // Data exists, convert to object
+            $agent_data = (object) $api_response['data'];
+        } else {
+            // API succeeded but no data - this means no roster data for this month
+            echo "<div style='padding:20px;background:#e7f3ff;border:1px solid #b8daff;border-radius:5px;margin:20px;'>";
+            echo "<h5 style='color:#004085;margin-top:0;'><i class='fas fa-info-circle'></i> No Roster Data Available</h5>";
+            echo "<p style='margin-bottom:5px;'><strong>Agent:</strong> " . esc_html($username) . "</p>";
+            echo "<p style='margin-bottom:5px;'><strong>Roster Code:</strong> " . esc_html($roster_code) . "</p>";
+            echo "<p style='margin-bottom:5px;'><strong>Selected Month:</strong> " . esc_html($selected_month) . "</p>";
+            echo "<p style='margin-bottom:0;color:#004085;'>No roster data has been created for this month yet. The roster may not have been generated or assigned for this period.</p>";
+            echo "<p style='margin-top:10px;margin-bottom:0;'><small>Try selecting a different month, or contact your administrator if you believe roster data should exist for this month.</small></p>";
+            echo "</div>";
+        }
+    } else {
+        // API call failed
+        $error_message = $api_response['message'] ?? 'Unknown error';
+        echo "<div style='padding:20px;color:orange;background:#fff3cd;border:1px solid #ffc107;border-radius:5px;margin:20px;'>";
+        echo "<h5 style='color:#856404;margin-top:0;'><i class='fas fa-exclamation-triangle'></i> API Call Failed</h5>";
+        echo "<p style='margin-bottom:5px;'><strong>Error:</strong> " . esc_html($error_message) . "</p>";
+        echo "<p style='margin-bottom:5px;'><strong>Roster Code:</strong> " . esc_html($roster_code) . "</p>";
+        echo "<p style='margin-bottom:5px;'><strong>Month:</strong> " . esc_html($selected_month) . "</p>";
+        echo "<p style='margin-bottom:0;'><small>Add <code>?debug=1</code> to URL for more details.</small></p>";
+        echo "</div>";
+    }
+}
 
-$approval_history = [];
+// Initialize employee data from agent_info (even if no roster data)
+$employee_name = $agent_info['agent_name'] ?? $username ?? '';
+$sale_manager = $agent_info['sale_manager'] ?? '';
+$current_shift = 'NA';
+$current_rdo = 'NA';
+$rdo_day = '';
+
+// If we have roster data, use it; otherwise use agent_info defaults
+if ($agent_data) {
+    $sale_manager = $agent_data->sm ?? $sale_manager;
+    $current_shift = $agent_data->shift_time ?? 'NA';
+    if (preg_match('/^\d{4}$/', $current_shift)) {
+        $current_shift = substr($current_shift, 0, 2) . ':' . substr($current_shift, 2);
+    }
+    $rdo_day = strtolower($agent_data->rdo ?? '');
+    $current_rdo = isset($day_mapping[strtolower($agent_data->rdo)]) 
+                  ? $day_mapping[strtolower($agent_data->rdo)] 
+                  : 'NA';
+    
+    // Get the current month and year
+    $current_month = $agent_data->month ?? date('m');
+    $current_year = $agent_data->year ?? date('Y');
+} else {
+    // Use agent_info for basic shift info if available
+    if (isset($agent_info['shift_rep_time']) && !empty($agent_info['shift_rep_time'])) {
+        $current_shift = $agent_info['shift_rep_time'];
+        // Format time if needed (e.g., "08:00:00" -> "08:00")
+        if (strlen($current_shift) >= 5) {
+            $current_shift = substr($current_shift, 0, 5);
+        }
+    }
+    $current_month = date('m');
+    $current_year = date('Y');
+}
+
+// Get confirmation status (only if we have roster_code)
+$is_confirmed = false;
+if (!empty($roster_code)) {
+    // Get confirmation status using API
+    $api_response = api_get("/roster/employees/{$roster_code}/confirm?month={$selected_month}");
+    $is_confirmed = ($api_response['status'] === 'success' && $api_response['data'] === true);
+}
+
+ $approval_history = [];
 if ($username !== 'lee') {
-if (!empty($username)) {
-    $approval_history = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM $roster_requests_table WHERE agent_name = %s ORDER BY auto_id DESC",
-        $username
-    ));
+    if (!empty($username)) {
+        // 2. Get Employee Approval History using API
+        $api_response = api_get("/roster/employees/{$username}/approval-history");
+        
+        if ($api_response['status'] === 'success' && $api_response['data']) {
+            $approval_history = $api_response['data'];
+        }
+    }
 }
-}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Verify nonce for security
+    if (!isset($_POST['roster_request_nonce']) || !wp_verify_nonce($_POST['roster_request_nonce'], 'roster_request_action')) {
+        wp_die('Security check failed. Please try again.');
+    }
+    
     $reason = sanitize_text_field($_POST['reason']);
 
     if (isset($_POST['shift_change'])) {
         $new_shift = sanitize_text_field($_POST['newShift']);
         $formatted_current_shift = date('g:i A', strtotime($current_shift));
-        $wpdb->insert($roster_requests_table, [
-            'type' => 'Shift Change Request',
-            'agent_name' => $employee_name,
+        
+        // 3. Submit Shift Change Request using API
+        $api_response = api_post("/roster/requests/shift-change", [
+            'agent_name' => $username,
             'sale_manager' => $sale_manager,
             'roster_code' => $roster_code,
-            'status' => 'Pending',
             'current_shift' => $formatted_current_shift,
             'requested_shift' => $new_shift,
             'reason' => $reason
@@ -140,12 +410,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif (isset($_POST['rdo_change'])) {
         $full_day = sanitize_text_field($_POST['day']);
         $requested_day = trim(strtok($full_day, '('));
-        $wpdb->insert($roster_requests_table, [
-            'type' => 'RDO Change Request',
-            'agent_name' => $employee_name,
+        
+        // 4. Submit RDO Change Request using API
+        $api_response = api_post("/roster/requests/rdo-change", [
+            'agent_name' => $username,
             'sale_manager' => $sale_manager,
             'roster_code' => $roster_code,
-            'status' => 'Pending',
             'current_rdo' => $current_rdo,
             'requested_rdo' => $requested_day,
             'reason' => $reason
@@ -154,46 +424,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif (isset($_POST['leave_request'])) {
         $full_day = sanitize_text_field($_POST['day']);
         $requested_day = trim(strtok($full_day, '('));
-        $wpdb->insert($roster_requests_table, [
-            'type' => 'Leave Request',
-            'agent_name' => $employee_name,
+        
+        // 5. Submit Leave Request using API
+        $api_response = api_post("/roster/requests/leave", [
+            'agent_name' => $username,
             'sale_manager' => $sale_manager,
             'roster_code' => $roster_code,
-            'status' => 'Pending',
-            'current_rdo' => $requested_day,
+            'requested_day' => $requested_day,
             'reason' => $reason
         ]);
-
+    }
+    
     wp_redirect($_SERVER['REQUEST_URI']);
     exit;
 }
 elseif (isset($_POST['confirm_roster'])) {
-        // Update the confirm column in the database
-        $wpdb->update(
-            $roster_table,
-            ['confirm' => 1],
-            [
-                'employee_code' => $roster_code,
-                'month' => $selected_month
-            ],
-            ['%d'],
-            ['%s','%s']
-        );
-        // Set confirmation status to true
-        $is_confirmed = true;
-        
-        // Show confirmation message
-        add_action('wp_footer', function() {
-            echo '<script>
-                alert("No more roster requests will be available after confirming the roster.");
-                window.location.href = window.location.href;
-            </script>';
-        });
-}
+    // Verify nonce for security
+    if (!isset($_POST['confirm_roster_nonce']) || !wp_verify_nonce($_POST['confirm_roster_nonce'], 'confirm_roster_action')) {
+        wp_die('Security check failed. Please try again.');
+    }
+    
+    // 6. Confirm Roster using API
+    $api_response = api_post("/roster/employees/{$roster_code}/confirm", [
+        'month' => $selected_month
+    ]);
+    
+    // Set confirmation status to true
+    $is_confirmed = true;
+    
+    // Show confirmation message
+    add_action('wp_footer', function() {
+        echo '<script>
+            alert("No more roster requests will be available after confirming the roster.");
+            window.location.href = window.location.href;
+        </script>';
+    });
 }
 ?>
-
-
 
 <!DOCTYPE html>
 <html lang="en">
@@ -759,7 +1026,7 @@ elseif (isset($_POST['confirm_roster'])) {
         }
         
         .approval-table-head {
-            #ffd207 !Important;
+            background-color: #ffd207 !important;
         }
     
             /* Month selector styles */
@@ -827,33 +1094,15 @@ elseif (isset($_POST['confirm_roster'])) {
 </head>
 <body>
 
-<div class="container mt-4 mb-5">
+<div class="container mt-4 mb-5" style="padding-top: 100px;">
     <!-- Combined Search and Month Selection -->
     <br>
     <br>
     <br>
     <br>
 
-    <!--<div class="card">-->
-    <!--    <div class="card-body">-->
-    <!--        <form method="GET" action="">-->
-    <!--            <div class="search-container">-->
-                <!-- Month Selector Dropdown -->
-    <!--            <div class="month-selector">-->
-    <!--                <label for="month-select" class="form-label"><strong>Select Month:</strong></label>-->
-    <!--                <select class="form-select" id="month-select" name="month" onchange="this.form.submit()">-->
-    <!--                    <?php foreach ($months as $month): ?>-->
-    <!--                        <option value="<?php echo esc_attr($month); ?>" <?php echo $selected_month === $month ? 'selected' : ''; ?>>-->
-    <!--                            <?php echo esc_html($month); ?>-->
-    <!--                        </option>-->
-    <!--                    <?php endforeach; ?>-->
-    <!--                </select>-->
-    <!--            </div>-->
-    <!--            </div>-->
-    <!--        </form>-->
-    <!--    </div>-->
-    <!--</div>-->
-    <?php if (!empty($username) && $agent_data): ?>
+    <?php if (!empty($username)): ?>
+        <?php if ($agent_info): // Show page if we have agent info, even without roster data ?>
     <div class="row">
         <!-- Roster Overview for the agent -->
         <div class="col-12">
@@ -880,7 +1129,39 @@ elseif (isset($_POST['confirm_roster'])) {
                         </span>!
                     </h5>
 
-                    <p class="welcome-message">Your current roster is shown below. <?php echo $is_confirmed ? 'This roster has been confirmed and cannot be modified.' : 'You can request shift changes or RDO changes as needed.'; ?></p>
+                    <?php if ($agent_data): ?>
+                        <p class="welcome-message">Your current roster is shown below. <?php echo $is_confirmed ? 'This roster has been confirmed and cannot be modified.' : 'You can request shift changes or RDO changes as needed.'; ?></p>
+                    <?php else: ?>
+                        <p class="welcome-message">No roster data is available for <strong><?php echo esc_html($selected_month); ?></strong> yet. Please select a different month or contact your administrator if you believe roster data should exist for this period.</p>
+                        
+                        <!-- Display employee basic information when no roster data -->
+                        <div style="background:#e7f3ff;border:1px solid #b8daff;border-radius:5px;padding:15px;margin:20px 0;">
+                            <h6 style="color:#004085;margin-top:0;"><i class="fas fa-user me-2"></i>Employee Information</h6>
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:10px;">
+                                <?php if (!empty($agent_info['tsr'])): ?>
+                                    <div><strong>TSR:</strong> <?php echo esc_html($agent_info['tsr']); ?></div>
+                                <?php endif; ?>
+                                <?php if (!empty($agent_info['roster_code'])): ?>
+                                    <div><strong>Roster Code:</strong> <?php echo esc_html($agent_info['roster_code']); ?></div>
+                                <?php endif; ?>
+                                <?php if (!empty($agent_info['team_name'])): ?>
+                                    <div><strong>Team:</strong> <?php echo esc_html($agent_info['team_name']); ?></div>
+                                <?php endif; ?>
+                                <?php if (!empty($sale_manager)): ?>
+                                    <div><strong>Sale Manager:</strong> <?php echo esc_html($sale_manager); ?></div>
+                                <?php endif; ?>
+                                <?php if (!empty($agent_info['location'])): ?>
+                                    <div><strong>Location:</strong> <?php echo esc_html($agent_info['location']); ?></div>
+                                <?php endif; ?>
+                                <?php if (!empty($agent_info['employee_status'])): ?>
+                                    <div><strong>Status:</strong> <?php echo esc_html($agent_info['employee_status']); ?></div>
+                                <?php endif; ?>
+                                <?php if ($current_shift !== 'NA'): ?>
+                                    <div><strong>Default Shift:</strong> <?php echo esc_html($current_shift); ?></div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
                     
                     <div class="date-range-container">
                         <div class="date-range-buttons" id="date-range-buttons">
@@ -901,6 +1182,7 @@ elseif (isset($_POST['confirm_roster'])) {
                                     <i class="fas fa-exchange-alt me-1"></i>Request Shift Change
                                 </button>
                                 <form method="POST" style="display: inline;">
+                                    <?php wp_nonce_field('confirm_roster_action', 'confirm_roster_nonce'); ?>
                                     <button type="submit" name="confirm_roster" class="btn btn-confirm btn-lg fs-5" onclick="return confirm('Are you sure you want to confirm this roster? No more changes will be allowed for this month.')">
                                         <i class="fas fa-check-circle me-1"></i>Confirm Roster
                                     </button>
@@ -943,6 +1225,7 @@ elseif (isset($_POST['confirm_roster'])) {
         </div>
         <div class="card-body">
             <form id="rdo-change-form" method="POST">
+                <?php wp_nonce_field('roster_request_action', 'roster_request_nonce'); ?>
                 <input type="hidden" name="rdo_change" value="1">
                 <div class="mb-3">
                     <label for="current-rdo-day" class="form-label">Current Day</label>
@@ -977,6 +1260,7 @@ elseif (isset($_POST['confirm_roster'])) {
         </div>
         <div class="card-body">
             <form id="shift-change-form" method="POST">
+                <?php wp_nonce_field('roster_request_action', 'roster_request_nonce'); ?>
                 <input type="hidden" name="shift_change" value="1">
                 <div class="mb-3">
                     <p><strong>Note: Shift Change will be applied to the whole month.</strong></p>
@@ -1023,6 +1307,7 @@ elseif (isset($_POST['confirm_roster'])) {
         </div>
         <div class="card-body">
             <form id="leave-change-form" method="POST">
+                <?php wp_nonce_field('roster_request_action', 'roster_request_nonce'); ?>
                 <input type="hidden" name="leave_request" value="1">
                 <div class="mb-3">
                     <label for="leave-day" class="form-label">Day</label>
@@ -1077,6 +1362,42 @@ elseif (isset($_POST['confirm_roster'])) {
         </div>
     </div>
 </div>
+        <?php else: ?>
+            <!-- Show message when agent_data is not available -->
+            <div class="row">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="empty-state">
+                                <i class="fas fa-calendar-times"></i>
+                                <h5>No Roster Data Available</h5>
+                                <p>Unable to load roster data for <strong><?php echo esc_html($username); ?></strong>.</p>
+                                <?php if (empty($roster_code ?? '')): ?>
+                                    <p style="color:orange;">Please ensure your agent profile has a roster code configured.</p>
+                                <?php else: ?>
+                                    <p style="color:orange;">Please check if roster data exists for the selected month: <strong><?php echo esc_html($selected_month); ?></strong></p>
+                                <?php endif; ?>
+                                <p><small>Add <code>?debug=1</code> to the URL for detailed error information.</small></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        <?php endif; ?>
+    <?php else: ?>
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="empty-state">
+                            <i class="fas fa-user-times"></i>
+                            <h5>No User Information</h5>
+                            <p>Unable to identify the current user. Please ensure you are logged in.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     <?php endif; ?>
 </div>
 <!-- Success Toast Notification -->
@@ -1152,8 +1473,6 @@ elseif (isset($_POST['confirm_roster'])) {
         const now = new Date();
         let targetMonth;
         
-        
-        
         // Find the selected month in the months array to get its index
         const months = ['January', 'February', 'March', 'April', 'May', 'June', 
                        'July', 'August', 'September', 'October', 'November', 'December'];
@@ -1190,6 +1509,24 @@ elseif (isset($_POST['confirm_roster'])) {
         // Clear existing data
         const rosterBody = document.getElementById('roster-body');
         rosterBody.innerHTML = '';
+        
+        // Check if we have any roster data
+        const hasRosterData = Object.keys(agentShifts).length > 0;
+        
+        // If no roster data, show a message
+        if (!hasRosterData) {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td colspan="4" style="text-align:center;padding:40px;">
+                    <i class="fas fa-calendar-times" style="font-size:48px;color:#6c757d;margin-bottom:15px;"></i>
+                    <h5 style="color:#6c757d;">No Roster Data Available</h5>
+                    <p style="color:#6c757d;">No roster schedule has been created for ${selectedMonth} yet.</p>
+                    <p style="color:#6c757d;font-size:0.9em;">Please try selecting a different month or contact your administrator.</p>
+                </td>
+            `;
+            rosterBody.appendChild(row);
+            return;
+        }
         
         // Get month name (e.g. "June", "July")
         const monthName = targetMonth.toLocaleDateString('en-US', { month: 'long' });
@@ -1465,7 +1802,7 @@ function generateMonthCalendar(targetMonth, selectedDay) {
         targetMonthIndex = (now.getMonth() + 1) % 12;
         if (now.getMonth() === 11) targetYear += 1; // Dec -> Jan
       } else {
-        // Show the selected month; adjust year if it’s earlier in the year (Dec->Jan case)
+        // Show the selected month; adjust year if it's earlier in the year (Dec->Jan case)
         targetMonthIndex = monthIndex;
         if (targetMonthIndex < now.getMonth()) targetYear += 1;
       }

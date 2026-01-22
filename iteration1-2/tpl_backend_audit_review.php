@@ -8,11 +8,20 @@ ini_set('display_errors', 1);
 
 require_once(dirname(__FILE__, 5) . '/wp-config.php');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    echo json_encode(['success' => false, 'error' => 'Database connection failed']);
-    exit;
+// Define API base URL if not already defined
+if (!defined('API_BASE_URL')) {
+    define('API_BASE_URL', 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1');
 }
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// $mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+// if ($mysqli->connect_error) {
+//     echo json_encode(['success' => false, 'error' => 'Database connection failed']);
+//     exit;
+// }
+// ============================================================================
 
 // --- Filters ---
 $from = $_GET['from'] ?? date('Y-m-01');
@@ -29,22 +38,48 @@ if (strtotime($from) > strtotime($to)) {
     [$from, $to] = [$to, $from];
 }
 
-// Agents for dropdown
+// Agents for dropdown via API
+$curl_agents = curl_init();
+curl_setopt_array($curl_agents, array(
+    CURLOPT_URL => API_BASE_URL . '/audit-review/agents',
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_ENCODING => '',
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 0,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => 'GET',
+));
+$response_agents = curl_exec($curl_agents);
+curl_close($curl_agents);
+$responseData_agents = json_decode($response_agents, true);
 $all_agents = [];
-$agent_query = "
-    SELECT DISTINCT agent_name
-    FROM wpk4_backend_agent_codes
-    WHERE location = 'BOM' AND status = 'active'
-    ORDER BY agent_name ASC
-";
-$res = $mysqli->query($agent_query);
-if ($res && $res->num_rows > 0) {
-    while ($row = $res->fetch_assoc()) {
-        $all_agents[] = $row['agent_name'];
+if (isset($responseData_agents['status']) && $responseData_agents['status'] === 'success' && isset($responseData_agents['data']['agents'])) {
+    foreach ($responseData_agents['data']['agents'] as $agent) {
+        $all_agents[] = is_array($agent) ? $agent['agent_name'] : $agent;
     }
 }
 
-// --- AJAX: agent-wise details for a specific calendar date ---
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// // Agents for dropdown
+// $all_agents = [];
+// $agent_query = "
+//     SELECT DISTINCT agent_name
+//     FROM wpk4_backend_agent_codes
+//     WHERE location = 'BOM' AND status = 'active'
+//     ORDER BY agent_name ASC
+// ";
+// $res = $mysqli->query($agent_query);
+// if ($res && $res->num_rows > 0) {
+//     while ($row = $res->fetch_assoc()) {
+//         $all_agents[] = $row['agent_name'];
+//     }
+// }
+// ============================================================================
+
+// --- AJAX: agent-wise details for a specific calendar date via API ---
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'agent_detail' && isset($_GET['date'])) {
     header('Content-Type: application/json');
 
@@ -56,77 +91,291 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'agent_detail' && isset($_GET['dat
         exit;
     }
 
-    $sql = "
-        SELECT agent_name,
-               SUM(fit_audit)      AS fit_audit,
-               SUM(gdeal_audit)    AS gdeal_audit,
-               SUM(ticket_audited) AS ticket_audited
-        FROM wpk4_agent_after_sale_productivity_report
-        WHERE DATE(`date`) = ?
-          AND agent_name <> 'ABDN' and ticket_audited > 0
-    ";
-    $types = "s";
-    $params = [$ajax_date];
-
+    // Build API URL
+    $url = API_BASE_URL . '/audit-review/agent-data/' . urlencode($ajax_date);
     if ($ajax_agent !== '') {
-        $sql .= " AND agent_name = ?";
-        $types .= "s";
-        $params[] = $ajax_agent;
+        $url .= '?agent_name=' . urlencode($ajax_agent);
     }
-
-    $sql .= " GROUP BY agent_name ORDER BY agent_name ASC";
-
-    $stmt = $mysqli->prepare($sql);
-    $stmt->bind_param($types, ...$params);
-    $stmt->execute();
-    $result = $stmt->get_result();
-
+    
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 0,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'GET',
+    ));
+    
+    $response = curl_exec($curl);
+    curl_close($curl);
+    
+    $responseData = json_decode($response, true);
     $data = [];
-    if ($result && $result->num_rows > 0) {
-        while ($row = $result->fetch_assoc()) {
-            $data[] = $row;
-        }
+    
+    if (isset($responseData['status']) && $responseData['status'] === 'success' && isset($responseData['data'])) {
+        $apiData = is_array($responseData['data']) ? $responseData['data'] : [];
+        $data = $apiData;
     }
+    
     echo json_encode($data);
     exit;
 }
 
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// // --- AJAX: agent-wise details for a specific calendar date ---
+// if (isset($_GET['ajax']) && $_GET['ajax'] === 'agent_detail' && isset($_GET['date'])) {
+//     header('Content-Type: application/json');
+//
+//     $ajax_date  = $_GET['date'];
+//     $ajax_agent = $_GET['agent_name'] ?? '';
+//
+//     if (!$valid($ajax_date)) {
+//         echo json_encode([]);
+//         exit;
+//     }
+//
+//     $sql = "
+//         SELECT agent_name,
+//                SUM(fit_audit)      AS fit_audit,
+//                SUM(gdeal_audit)    AS gdeal_audit,
+//                SUM(ticket_audited) AS ticket_audited
+//         FROM wpk4_agent_after_sale_productivity_report
+//         WHERE DATE(`date`) = ?
+//           AND agent_name <> 'ABDN' and ticket_audited > 0
+//     ";
+//     $types = "s";
+//     $params = [$ajax_date];
+//
+//     if ($ajax_agent !== '') {
+//         $sql .= " AND agent_name = ?";
+//         $types .= "s";
+//         $params[] = $ajax_agent;
+//     }
+//
+//     $sql .= " GROUP BY agent_name ORDER BY agent_name ASC";
+//
+//     $stmt = $mysqli->prepare($sql);
+//     $stmt->bind_param($types, ...$params);
+//     $stmt->execute();
+//     $result = $stmt->get_result();
+//
+//     $data = [];
+//     if ($result && $result->num_rows > 0) {
+//         while ($row = $result->fetch_assoc()) {
+//             $data[] = $row;
+//         }
+//     }
+//     echo json_encode($data);
+//     exit;
+// }
+// ============================================================================
+
+// Simple class to mimic mysqli_result for API responses
+class ApiResult {
+    public $num_rows = 0;
+    private $data = [];
+    private $current_index = 0;
+    
+    public function __construct($data = []) {
+        $this->data = $data;
+        $this->num_rows = count($data);
+        $this->current_index = 0;
+    }
+    
+    public function fetch_assoc() {
+        if ($this->current_index < $this->num_rows) {
+            return $this->data[$this->current_index++];
+        }
+        return null;
+    }
+    
+    public function reset() {
+        $this->current_index = 0;
+    }
+}
+
 /**
- * Fetch date summary for a slice of the month (by day-of-month) within a given overall range.
+ * Fetch date summary for a slice of the month (by day-of-month) within a given overall range via API.
  * - Half-open range [from, to+1day) includes the full end day.
  * - Optional agent filter.
- * NOTE: Using DAY(`date`) will limit index use on `date`, but keeps your current slice semantics.
  */
-function fetchDateSummary($mysqli, $startDay, $endDay, $fromDate, $toDate, $agentName = '')
+function fetchDateSummary($startDay, $endDay, $fromDate, $toDate, $agentName = '')
 {
-    $sql = "
-        SELECT DATE(`date`) AS report_date,
-               SUM(fit_audit)      AS fit_audit,
-               SUM(gdeal_audit)    AS gdeal_audit,
-               SUM(ticket_audited) AS ticket_audited
-        FROM wpk4_agent_after_sale_productivity_report
-        WHERE `date` >= ? 
-          AND `date` < DATE_ADD(?, INTERVAL 1 DAY)
-          AND DAY(`date`) BETWEEN ? AND ?
-          AND agent_name <> 'ABDN'
-    ";
-
-    $types  = "ssii";
-    $params = [$fromDate, $toDate, (int)$startDay, (int)$endDay];
-
+    // Build API URL with query parameters
+    $url = API_BASE_URL . '/audit-review';
+    $params = [
+        'from' => $fromDate,
+        'to' => $toDate
+    ];
+    
     if ($agentName !== '') {
-        $sql   .= " AND agent_name = ?";
-        $types .= "s";
-        $params[] = $agentName;
+        $params['agent_name'] = $agentName;
     }
-
-    $sql .= " GROUP BY report_date ORDER BY report_date ASC";
-
-    $stmt = $mysqli->prepare($sql);
-    $stmt->bind_param($types, ...$params);
-    $stmt->execute();
-    return $stmt->get_result();
+    
+    $url .= '?' . http_build_query($params);
+    
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 0,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'GET',
+    ));
+    
+    $response = curl_exec($curl);
+    $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+    
+    // Check for HTTP errors
+    if ($httpCode >= 400) {
+        error_log("Audit Review API error: HTTP $httpCode - $response");
+        return new ApiResult([]);
+    }
+    
+    $responseData = json_decode($response, true);
+    
+    // Debug: Log API response if debug mode is enabled
+    $debug_mode = isset($_GET['debug']) && $_GET['debug'] == '1';
+    if ($debug_mode) {
+        error_log("Audit Review API URL: $url");
+        error_log("Audit Review API Response: " . substr($response, 0, 1000));
+        error_log("Audit Review Parsed Data: " . print_r($responseData, true));
+    }
+    
+    // Return data in a format compatible with the existing code
+    if (isset($responseData['status']) && $responseData['status'] === 'success' && isset($responseData['data'])) {
+        $data = $responseData['data'];
+        
+        // API returns data in 'ranges' structure
+        // Each range has: 'title', 'start_day', 'end_day', 'data', 'totals'
+        if (isset($data['ranges']) && is_array($data['ranges'])) {
+            // Find the matching range based on startDay and endDay
+            foreach ($data['ranges'] as $range) {
+                if (isset($range['start_day']) && isset($range['end_day']) && 
+                    (int)$range['start_day'] === (int)$startDay && 
+                    (int)$range['end_day'] === (int)$endDay) {
+                    // Found matching range, return its data
+                    $resultData = [];
+                    if (isset($range['data']) && is_array($range['data'])) {
+                        foreach ($range['data'] as $row) {
+                            // Ensure date is in correct format
+                            $reportDate = $row['report_date'] ?? $row['date'] ?? '';
+                            if (empty($reportDate)) {
+                                continue; // Skip rows without date
+                            }
+                            
+                            $resultData[] = [
+                                'report_date' => $reportDate,
+                                'fit_audit' => (int)($row['fit_audit'] ?? 0),
+                                'gdeal_audit' => (int)($row['gdeal_audit'] ?? 0),
+                                'ticket_audited' => (int)($row['ticket_audited'] ?? 0)
+                            ];
+                        }
+                    }
+                    return new ApiResult($resultData);
+                }
+            }
+            
+            // If no matching range found, log for debugging
+            if ($debug_mode) {
+                error_log("No matching range found for startDay=$startDay, endDay=$endDay. Available ranges: " . print_r(array_map(function($r) { return ['start' => $r['start_day'] ?? 'N/A', 'end' => $r['end_day'] ?? 'N/A']; }, $data['ranges']), true));
+            }
+        }
+        
+        // Fallback: If API returns metrics array directly
+        if (isset($data['metrics']) && is_array($data['metrics'])) {
+            $resultData = [];
+            foreach ($data['metrics'] as $row) {
+                $reportDate = $row['date'] ?? $row['report_date'] ?? '';
+                if (empty($reportDate)) {
+                    continue;
+                }
+                $resultData[] = [
+                    'report_date' => $reportDate,
+                    'fit_audit' => (int)($row['fit_audit'] ?? 0),
+                    'gdeal_audit' => (int)($row['gdeal_audit'] ?? 0),
+                    'ticket_audited' => (int)($row['ticket_audited'] ?? 0)
+                ];
+            }
+            return new ApiResult($resultData);
+        }
+        
+        // Fallback: If data is directly an array
+        if (is_array($data) && !isset($data['ranges'])) {
+            $resultData = [];
+            foreach ($data as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $reportDate = $row['date'] ?? $row['report_date'] ?? '';
+                if (empty($reportDate)) {
+                    continue;
+                }
+                $resultData[] = [
+                    'report_date' => $reportDate,
+                    'fit_audit' => (int)($row['fit_audit'] ?? 0),
+                    'gdeal_audit' => (int)($row['gdeal_audit'] ?? 0),
+                    'ticket_audited' => (int)($row['ticket_audited'] ?? 0)
+                ];
+            }
+            return new ApiResult($resultData);
+        }
+    }
+    
+    // Return empty result if API call fails
+    error_log("Audit Review API: No valid data found in response. Response: " . substr($response, 0, 500));
+    return new ApiResult([]);
 }
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// /**
+//  * Fetch date summary for a slice of the month (by day-of-month) within a given overall range.
+//  * - Half-open range [from, to+1day) includes the full end day.
+//  * - Optional agent filter.
+//  * NOTE: Using DAY(`date`) will limit index use on `date`, but keeps your current slice semantics.
+//  */
+// function fetchDateSummary($mysqli, $startDay, $endDay, $fromDate, $toDate, $agentName = '')
+// {
+//     $sql = "
+//         SELECT DATE(`date`) AS report_date,
+//                SUM(fit_audit)      AS fit_audit,
+//                SUM(gdeal_audit)    AS gdeal_audit,
+//                SUM(ticket_audited) AS ticket_audited
+//         FROM wpk4_agent_after_sale_productivity_report
+//         WHERE `date` >= ? 
+//           AND `date` < DATE_ADD(?, INTERVAL 1 DAY)
+//           AND DAY(`date`) BETWEEN ? AND ?
+//           AND agent_name <> 'ABDN'
+//     ";
+//
+//     $types  = "ssii";
+//     $params = [$fromDate, $toDate, (int)$startDay, (int)$endDay];
+//
+//     if ($agentName !== '') {
+//         $sql   .= " AND agent_name = ?";
+//         $types .= "s";
+//         $params[] = $agentName;
+//     }
+//
+//     $sql .= " GROUP BY report_date ORDER BY report_date ASC";
+//
+//     $stmt = $mysqli->prepare($sql);
+//     $stmt->bind_param($types, ...$params);
+//     $stmt->execute();
+//     return $stmt->get_result();
+// }
+// ============================================================================
 
 $endDate = new DateTime($to);
 $lastDay = (int)$endDate->format('d');
@@ -219,8 +468,25 @@ $ranges = [
 
     <div class="data-section">
         <?php
+        // Debug mode
+        $debug_mode = isset($_GET['debug']) && $_GET['debug'] == '1';
+        if ($debug_mode) {
+            echo '<div style="background: #fff3cd; padding: 15px; margin: 20px 0; border: 1px solid #ffc107; border-radius: 5px;">';
+            echo '<strong>Debug Mode Enabled</strong><br>';
+            echo 'API Base URL: ' . htmlspecialchars(API_BASE_URL) . '<br>';
+            echo 'From Date: ' . htmlspecialchars($from) . '<br>';
+            echo 'To Date: ' . htmlspecialchars($to) . '<br>';
+            echo 'Selected Agent: ' . htmlspecialchars($selected_agent ?: 'All') . '<br>';
+            echo '</div>';
+        }
+        
         foreach ($ranges as $title => [$startDay, $endDay]) {
-            $result = fetchDateSummary($mysqli, $startDay, $endDay, $from, $to, $selected_agent);
+            $result = fetchDateSummary($startDay, $endDay, $from, $to, $selected_agent);
+            // ============================================================================
+            // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+            // ============================================================================
+            // $result = fetchDateSummary($mysqli, $startDay, $endDay, $from, $to, $selected_agent);
+            // ============================================================================
 
             echo "<div class='table-container'>";
             echo "<h2 class='section-title'>Date Range: $title</h2>";
@@ -239,8 +505,31 @@ $ranges = [
             $total_audit = 0;
 
             if ($result && $result->num_rows > 0) {
+                // Reset index for API results
+                if (method_exists($result, 'reset')) {
+                    $result->reset();
+                }
+                
                 while ($row = $result->fetch_assoc()) {
-                    $dateFormatted = date('Y-m-d', strtotime($row['report_date']));
+                    // Validate and format date
+                    $reportDate = $row['report_date'] ?? '';
+                    if (empty($reportDate)) {
+                        continue; // Skip rows without date
+                    }
+                    
+                    // Try to parse date - handle different formats
+                    $dateTimestamp = strtotime($reportDate);
+                    if ($dateTimestamp === false || $dateTimestamp === 0) {
+                        // If strtotime fails, try to use the date as-is if it's already in Y-m-d format
+                        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $reportDate)) {
+                            $dateFormatted = $reportDate;
+                        } else {
+                            continue; // Skip invalid dates
+                        }
+                    } else {
+                        $dateFormatted = date('Y-m-d', $dateTimestamp);
+                    }
+                    
                     $fit   = (int)$row['fit_audit'];
                     $gdeal = (int)$row['gdeal_audit'];
                     $aud   = (int)$row['ticket_audited'];
@@ -270,7 +559,11 @@ $ranges = [
             echo "</tbody></table>";
             echo "</div>";
         }
-        $mysqli->close();
+        // ============================================================================
+        // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+        // ============================================================================
+        // $mysqli->close();
+        // ============================================================================
         ?>
     </div>
 </div>
@@ -295,11 +588,30 @@ document.addEventListener('DOMContentLoaded', function() {
 
     async function fetchAgentDetails(date) {
         const agentName = agentFilter.value;
-        const url = `?ajax=agent_detail&date=${encodeURIComponent(date)}&agent_name=${encodeURIComponent(agentName)}`;
+        // Use API endpoint directly
+        let url = '<?php echo API_BASE_URL; ?>/audit-review/agent-data/' + encodeURIComponent(date);
+        if (agentName) {
+            url += '?agent_name=' + encodeURIComponent(agentName);
+        }
+
+        // ============================================================================
+        // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+        // ============================================================================
+        // const url = `?ajax=agent_detail&date=${encodeURIComponent(date)}&agent_name=${encodeURIComponent(agentName)}`;
+        // ============================================================================
 
         try {
             const resp = await fetch(url);
-            const data = await resp.json();
+            const respData = await resp.json();
+            // Extract data from API response
+            const data = (respData.status === 'success' && respData.data) ? respData.data : [];
+            
+            // ============================================================================
+            // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+            // ============================================================================
+            // const resp = await fetch(url);
+            // const data = await resp.json();
+            // ============================================================================
 
             if (!Array.isArray(data) || data.length === 0) {
                 modalContent.innerHTML = `<p style="font-style: italic; color: #666;">No agent data available for ${date}.</p>`;

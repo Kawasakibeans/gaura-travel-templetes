@@ -2,21 +2,56 @@
 /**
  * Template Name: Dupe Bookings
  */
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+// Start output buffering at the very beginning to catch ALL output
+// This must be the first thing after <?php to prevent any whitespace issues
+// Use nested buffering to ensure we can clean properly before get_header()
+if (!ob_get_level()) {
+    ob_start();
+} else {
+    // If buffer already exists, start a new nested one
+    ob_start();
+}
 
-require_once(dirname(__FILE__, 5) . '/wp-config.php');
+// Suppress error display until after headers are sent (errors will still be logged)
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+error_reporting(E_ALL);
+
+// WordPress should already be loaded when this template is called
+// Only load if absolutely necessary (shouldn't be needed in normal WordPress flow)
+if (!defined('ABSPATH')) {
+    require_once(dirname(__FILE__, 5) . '/wp-load.php');
+}
 date_default_timezone_set('Australia/Melbourne');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) wp_die("Database connection failed");
+// Define API base URL if not already defined
+if (!defined('API_BASE_URL')) {
+    define('API_BASE_URL', 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api_test_pamitha/public/v1');
+}
 
-function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// $mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+// if ($mysqli->connect_error) wp_die("Database connection failed");
+// ============================================================================
+
+function h($s){ 
+    if ($s === null || $s === false) return '';
+    return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); 
+}
 function normalize_name($fname, $lname){
-    $full = trim(preg_replace('/\s+/', ' ', ($fname ?? '') . ' ' . ($lname ?? '')));
+    $fname = $fname ?? '';
+    $lname = $lname ?? '';
+    $full = trim(preg_replace('/\s+/', ' ', $fname . ' ' . $lname));
     return mb_strtolower($full, 'UTF-8');
 }
-function path_only(){ return h(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH)); }
+function path_only(){ 
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    if (empty($uri)) return '';
+    $path = parse_url($uri, PHP_URL_PATH);
+    return h($path !== null ? $path : ''); 
+}
 
 $today = (new DateTime('now', new DateTimeZone('Australia/Melbourne')))->format('Y-m-d');
 $od_from = isset($_GET['od_from']) && $_GET['od_from'] !== '' ? $_GET['od_from'] : $today;
@@ -24,92 +59,201 @@ $od_to   = isset($_GET['od_to'])   && $_GET['od_to']   !== '' ? $_GET['od_to']  
 $pm_from = isset($_GET['pm_from']) && $_GET['pm_from'] !== '' ? $_GET['pm_from'] : $today;
 $pm_to   = isset($_GET['pm_to'])   && $_GET['pm_to']   !== '' ? $_GET['pm_to']   : $today;
 
-$od_range_display = $od_from . ' to ' . $od_to;
-$pm_range_display = $pm_from . ' to ' . $pm_to;
+$od_range_display = (!empty($od_from) && !empty($od_to)) ? ($od_from . ' to ' . $od_to) : '';
+$pm_range_display = (!empty($pm_from) && !empty($pm_to)) ? ($pm_from . ' to ' . $pm_to) : '';
 
-$od_from_dt = $od_from . ' 00:00:00';
-$od_to_dt   = $od_to   . ' 23:59:59';
-$pm_from_dt = $pm_from . ' 00:00:00';
-$pm_to_dt   = $pm_to   . ' 23:59:59';
+// These are kept for potential future use but not currently needed for API calls
+$od_from_dt = (!empty($od_from)) ? ($od_from . ' 00:00:00') : '';
+$od_to_dt   = (!empty($od_to))   ? ($od_to   . ' 23:59:59') : '';
+$pm_from_dt = (!empty($pm_from)) ? ($pm_from . ' 00:00:00') : '';
+$pm_to_dt   = (!empty($pm_to))   ? ($pm_to   . ' 23:59:59') : '';
 
-$sql = "
-SELECT
-    b.order_id           AS bookingid,
-    b.travel_date        AS travel_date,
-    b.trip_code          AS trip_code,
-    b.order_date         AS order_date,
-    b.payment_modified   AS payment_modified,
-    p.fname              AS fname,
-    p.lname              AS lname,
-    p.email_pax          AS email_pax
-FROM wpk4_backend_travel_bookings b
-JOIN wpk4_backend_travel_booking_pax p
-  ON b.order_id    = p.order_id
- AND b.co_order_id = p.co_order_id
- AND b.product_id  = p.product_id
-WHERE p.email_pax != ''
-  AND b.order_date BETWEEN ? AND ?
-  AND b.payment_modified BETWEEN ? AND ?
-ORDER BY b.auto_id DESC
-";
-$stmt = $mysqli->prepare($sql);
-if (!$stmt) wp_die("Prepare failed: " . h($mysqli->error));
-$stmt->bind_param("ssss", $od_from_dt, $od_to_dt, $pm_from_dt, $pm_to_dt);
-$stmt->execute();
-$res = $stmt->get_result();
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// $sql = "
+// SELECT
+//     b.order_id           AS bookingid,
+//     b.travel_date        AS travel_date,
+//     b.trip_code          AS trip_code,
+//     b.order_date         AS order_date,
+//     b.payment_modified   AS payment_modified,
+//     p.fname              AS fname,
+//     p.lname              AS lname,
+//     p.email_pax          AS email_pax
+// FROM wpk4_backend_travel_bookings b
+// JOIN wpk4_backend_travel_booking_pax p
+//   ON b.order_id    = p.order_id
+//  AND b.co_order_id = p.co_order_id
+//  AND b.product_id  = p.product_id
+// WHERE p.email_pax != ''
+//   AND b.order_date BETWEEN ? AND ?
+//   AND b.payment_modified BETWEEN ? AND ?
+// ORDER BY b.auto_id DESC
+// ";
+// $stmt = $mysqli->prepare($sql);
+// if (!$stmt) wp_die("Prepare failed: " . h($mysqli->error));
+// $stmt->bind_param("ssss", $od_from_dt, $od_to_dt, $pm_from_dt, $pm_to_dt);
+// $stmt->execute();
+// $res = $stmt->get_result();
+// 
+// $rows = [];
+// while ($r = $res->fetch_assoc()) $rows[] = $r;
+// $stmt->close();
+// ============================================================================
 
-$rows = [];
-while ($r = $res->fetch_assoc()) $rows[] = $r;
-$stmt->close();
-
-/* Group duplicates: Pax Name + trip_code + travel_date with >=2 distinct order_ids */
-$groups = [];
-foreach ($rows as $r) {
-    $norm_name   = normalize_name($r['fname'], $r['lname']);
-    $trip_code   = (string)$r['trip_code'];
-    $travel_date = (string)$r['travel_date']; // if needed: $travel_date = substr($travel_date,0,10);
-    $key = $norm_name . '|' . mb_strtolower($trip_code, 'UTF-8') . '|' . $travel_date;
-
-    if (!isset($groups[$key])) {
-        $groups[$key] = [
-            'pax_name_display' => trim(($r['fname'] ?? '') . ' ' . ($r['lname'] ?? '')),
-            'trip_code'        => $trip_code,
-            'travel_date'      => $travel_date,
-            'order_ids'        => [],
-            'items'            => [],
-        ];
-    }
-    $groups[$key]['order_ids'][$r['bookingid']] = true;
-    $groups[$key]['items'][] = [
-        'bookingid'        => $r['bookingid'],
-        'email_pax'        => $r['email_pax'],
-        'fname'            => $r['fname'],
-        'lname'            => $r['lname'],
-        'order_date'       => $r['order_date'],
-        'payment_modified' => $r['payment_modified'],
-    ];
+// Fetch data from API
+$url = API_BASE_URL . '/dupe-pax';
+$params = [];
+if (!empty($od_from)) {
+    $params['od_from'] = $od_from;
+}
+if (!empty($od_to)) {
+    $params['od_to'] = $od_to;
+}
+if (!empty($pm_from)) {
+    $params['pm_from'] = $pm_from;
+}
+if (!empty($pm_to)) {
+    $params['pm_to'] = $pm_to;
+}
+if (!empty($params)) {
+    $url .= '?' . http_build_query($params);
 }
 
-$dupes = [];
-foreach ($groups as $g) {
-    if (count($g['order_ids']) >= 2) {
-        $g['distinct_orders'] = array_keys($g['order_ids']);
-        unset($g['order_ids']);
-        $dupes[] = $g;
+$curl = curl_init();
+curl_setopt_array($curl, array(
+    CURLOPT_URL => $url,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_ENCODING => '',
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 30, // Set reasonable timeout (30 seconds)
+    CURLOPT_CONNECTTIMEOUT => 10, // Connection timeout
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => 'GET',
+    CURLOPT_SSL_VERIFYPEER => false, // Only if needed for development
+));
+
+$response = curl_exec($curl);
+$curlError = curl_error($curl);
+$httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+curl_close($curl);
+
+// Handle cURL errors
+if ($response === false || !empty($curlError)) {
+    error_log('cURL error in tpl_backend_dupe_pax.php: ' . $curlError);
+    $responseData = ['status' => 'error', 'message' => 'API request failed'];
+} else {
+    $responseData = json_decode($response, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        error_log('JSON decode error in tpl_backend_dupe_pax.php: ' . json_last_error_msg());
+        $responseData = ['status' => 'error', 'message' => 'Invalid API response'];
     }
+}
+
+// Extract rows and duplicate groups from API response
+$rows = [];
+$dupes = [];
+
+if (isset($responseData['status']) && $responseData['status'] === 'success') {
+    // Get duplicate groups from API (already processed)
+    if (isset($responseData['data']['duplicate_groups']) && is_array($responseData['data']['duplicate_groups'])) {
+        $dupes = $responseData['data']['duplicate_groups'];
+    } elseif (isset($responseData['duplicate_groups']) && is_array($responseData['duplicate_groups'])) {
+        $dupes = $responseData['duplicate_groups'];
+    }
+    
+    // Reconstruct rows array from duplicate groups for display purposes
+    // This is needed for the "Rows matched" count
+    if (is_array($dupes)) {
+        foreach ($dupes as $group) {
+            if (isset($group['items']) && is_array($group['items'])) {
+                foreach ($group['items'] as $item) {
+                    if (is_array($item)) {
+                        $rows[] = [
+                            'bookingid' => isset($item['bookingid']) ? (string)$item['bookingid'] : '',
+                            'travel_date' => isset($group['travel_date']) ? (string)$group['travel_date'] : '',
+                            'trip_code' => isset($group['trip_code']) ? (string)$group['trip_code'] : '',
+                            'order_date' => isset($item['order_date']) ? (string)$item['order_date'] : '',
+                            'payment_modified' => isset($item['payment_modified']) ? (string)$item['payment_modified'] : '',
+                            'fname' => isset($item['fname']) ? (string)$item['fname'] : '',
+                            'lname' => isset($item['lname']) ? (string)$item['lname'] : '',
+                            'email_pax' => isset($item['email_pax']) ? (string)$item['email_pax'] : ''
+                        ];
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// /* Group duplicates: Pax Name + trip_code + travel_date with >=2 distinct order_ids */
+// $groups = [];
+// foreach ($rows as $r) {
+//     $norm_name   = normalize_name($r['fname'], $r['lname']);
+//     $trip_code   = (string)$r['trip_code'];
+//     $travel_date = (string)$r['travel_date']; // if needed: $travel_date = substr($travel_date,0,10);
+//     $key = $norm_name . '|' . mb_strtolower($trip_code, 'UTF-8') . '|' . $travel_date;
+// 
+//     if (!isset($groups[$key])) {
+//         $groups[$key] = [
+//             'pax_name_display' => trim(($r['fname'] ?? '') . ' ' . ($r['lname'] ?? '')),
+//             'trip_code'        => $trip_code,
+//             'travel_date'      => $travel_date,
+//             'order_ids'        => [],
+//             'items'            => [],
+//         ];
+//     }
+//     $groups[$key]['order_ids'][$r['bookingid']] = true;
+//     $groups[$key]['items'][] = [
+//         'bookingid'        => $r['bookingid'],
+//         'email_pax'        => $r['email_pax'],
+//         'fname'            => $r['fname'],
+//         'lname'            => $r['lname'],
+//         'order_date'       => $r['order_date'],
+//         'payment_modified' => $r['payment_modified'],
+//     ];
+// }
+// 
+// $dupes = [];
+// foreach ($groups as $g) {
+//     if (count($g['order_ids']) >= 2) {
+//         $g['distinct_orders'] = array_keys($g['order_ids']);
+//         unset($g['order_ids']);
+//         $dupes[] = $g;
+//     }
+// }
+// ============================================================================
+
+// If API didn't return duplicates, fall back to empty array
+if (empty($dupes)) {
+    $dupes = [];
 }
 /* Sort by travel_date desc, then pax name asc */
-usort($dupes, function($a,$b){
-    $ad = strtotime($a['travel_date'] ?? '1970-01-01');
-    $bd = strtotime($b['travel_date'] ?? '1970-01-01');
-    if ($ad === $bd) {
-        return strcmp(
-            mb_strtolower($a['pax_name_display'] ?? '', 'UTF-8'),
-            mb_strtolower($b['pax_name_display'] ?? '', 'UTF-8')
-        );
-    }
-    return $bd <=> $ad;
-});
+if (is_array($dupes) && count($dupes) > 0) {
+    usort($dupes, function($a,$b){
+        $aDate = isset($a['travel_date']) && !empty($a['travel_date']) ? $a['travel_date'] : '1970-01-01';
+        $bDate = isset($b['travel_date']) && !empty($b['travel_date']) ? $b['travel_date'] : '1970-01-01';
+        $ad = strtotime($aDate);
+        $bd = strtotime($bDate);
+        if ($ad === false) $ad = 0;
+        if ($bd === false) $bd = 0;
+        
+        if ($ad === $bd) {
+            $aName = isset($a['pax_name_display']) ? (string)$a['pax_name_display'] : '';
+            $bName = isset($b['pax_name_display']) ? (string)$b['pax_name_display'] : '';
+            return strcmp(
+                mb_strtolower($aName, 'UTF-8'),
+                mb_strtolower($bName, 'UTF-8')
+            );
+        }
+        return $bd <=> $ad;
+    });
+}
 
 /* Prepare compact client payload for instant paging */
 $clientPayload = [
@@ -118,7 +262,29 @@ $clientPayload = [
 ];
 $totalGroups = count($dupes);
 
+// Before calling get_header(), clean any accidental output from our code
+// Use a more robust approach: end current buffer and start fresh for WordPress
+if (ob_get_level() > 0) {
+    $preHeaderOutput = ob_get_contents();
+    if (trim($preHeaderOutput) !== '') {
+        // Log unexpected output from our code
+        error_log('Output detected before get_header() in tpl_backend_dupe_pax.php: ' . substr($preHeaderOutput, 0, 500));
+    }
+    // End all nested buffers and start fresh
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+}
+
+// Start a fresh output buffer for WordPress header/footer
+ob_start();
+
+// Now call get_header() - any output from header.php will go to the buffer
+// The buffer will prevent "headers already sent" errors
 get_header();
+
+// Re-enable error display after headers should be sent
+ini_set('display_errors', 1);
 ?>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
 <style>

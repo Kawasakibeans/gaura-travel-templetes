@@ -5,51 +5,95 @@ include "tpl_contralized_functions.php";
 
 global $wpdb;
 $endoftoday = date("Y-m-d"). ' 00:00:00';
+
+// API Base URL
+$api_base_url = 'https://gauratravel.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1';
+
+/**
+ * Call API endpoint
+ */
+function callApi($url, $params = []) {
+    $fullUrl = $url;
+    if (!empty($params)) {
+        $queryString = http_build_query($params);
+        $fullUrl .= (strpos($url, '?') !== false ? '&' : '?') . $queryString;
+    }
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $fullUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode !== 200) {
+        error_log("API call failed: $fullUrl - HTTP Code: $httpCode");
+        return null;
+    }
+    
+    $data = json_decode($response, true);
+    if ($data && isset($data['status']) && $data['status'] === 'success' && isset($data['data'])) {
+        return $data['data'];
+    }
+    
+    return null;
+}
 if(isset($_GET["airline"]) && !isset($_GET["route"]) && $_GET["airline"] != '' && $_GET["airline"] != 'null')
 {
 	$airline=$_GET["airline"];
 	$array_route_code = array();
-	$results_lastorder = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_management_sheet where airline_code='$airline' && dep_date > '$endoftoday' order by route asc"); 
-	$rowcount_orderinfo = 0;	
-		foreach($results_lastorder as $row_last_order){ 
-			$rowcount_orderinfo++;
-			$array_route_code[] = $row_last_order->route; // last order id
-		}
+	
+	// Call API to get routes by airline
+	$apiUrl = $api_base_url . '/seat-availability/airlines/' . urlencode($airline) . '/routes';
+	$apiData = callApi($apiUrl);
+	
+	if ($apiData && isset($apiData['routes'])) {
+		$array_route_code = $apiData['routes'];
+		$rowcount_orderinfo = count($array_route_code);
+	} else {
+		$rowcount_orderinfo = 0;
+	}
 		
-		if($rowcount_orderinfo > 0)
-		{
-			$dropdown = "<select name='routeid' required id='routeid' onChange='updatedate(this.value)' style='width:100%; padding:10px;'>
-			<option value='' selected>Select</option>
-			";
-			$array_route_code = array_unique($array_route_code);
-			foreach($array_route_code as $value)
-			{ 
-				$dropdown .= "<option value='".$value."'>".$value."</option>";	
-			}
-			$dropdown .= "</select>";
+	if($rowcount_orderinfo > 0)
+	{
+		$dropdown = "<select name='routeid' required id='routeid' onChange='updatedate(this.value)' style='width:100%; padding:10px;'>
+		<option value='' selected>Select</option>
+		";
+		$array_route_code = array_unique($array_route_code);
+		foreach($array_route_code as $value)
+		{ 
+			$dropdown .= "<option value='".$value."'>".$value."</option>";	
 		}
+		$dropdown .= "</select>";
+	}
     echo $dropdown;
 }
 if(isset($_GET["route"]) && $_GET["route"] != '' && $_GET["route"] != 'null')
 {
-	if(isset($_GET["airline"]) && $_GET["airline"] != '')
-    {
-	    $airline = "airline_code = '".$_GET['airline']."'";
-    }
-    else
-    {
-        $airline = "airline_code != ''";
-    }
 	$route=$_GET["route"];
 	$array_dates = array();
-	$results_lastorder = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_management_sheet where $airline && dep_date > '$endoftoday' order by route asc"); 
-	$rowcount_orderinfo = count($results_lastorder);
-	if($rowcount_orderinfo > 0)
-		{
-			foreach($results_lastorder as $row_last_order){   
-			   $array_dates[] = $row_last_order->dep_date;
-			}
-		}	
+	
+	// Call API to get dates by route
+	$apiParams = [];
+	if(isset($_GET["airline"]) && $_GET["airline"] != '')
+    {
+	    $apiParams['airline_code'] = $_GET['airline'];
+    }
+	
+	$apiUrl = $api_base_url . '/seat-availability/routes/' . urlencode($route) . '/dates';
+	$apiData = callApi($apiUrl, $apiParams);
+	
+	if ($apiData && isset($apiData['dates'])) {
+		$array_dates = $apiData['dates'];
+		$rowcount_orderinfo = count($array_dates);
+	} else {
+		$rowcount_orderinfo = 0;
+	}
+	
+	// This section returns empty dropdown (original behavior)
     $dropdown = "";
     echo $dropdown;
 	
@@ -58,16 +102,17 @@ if(isset($_GET["routeforprice"]) && $_GET["routeforprice"] != '' && $_GET["route
 {
 	$route=$_GET["routeforprice"];
 	$array_route_code = array();
-	$results_lastorder = $wpdb->get_results( "SELECT DISTINCT(price.sale_price) as sale_price FROM wpk4_wt_price_category_relation price 
-    JOIN wpk4_backend_stock_product_manager stock 
-        ON trip_code LIKE '$route%' and date(stock.travel_date) >= CURRENT_DATE AND stock.pricing_id = price.pricing_id 
-    WHERE price.pricing_category_id = '954' AND price.sale_price != '0' ORDER BY CAST(price.sale_price AS UNSIGNED) ASC;
-    "); 
-	$rowcount_orderinfo = 0;	
-		foreach($results_lastorder as $row_last_order){ 
-			$rowcount_orderinfo++;
-			$array_route_code[] = $row_last_order->sale_price; // last order id
-		}
+	
+	// Call API to get prices by route
+	$apiUrl = $api_base_url . '/seat-availability/routes/' . urlencode($route) . '/prices';
+	$apiData = callApi($apiUrl);
+	
+	if ($apiData && isset($apiData['prices'])) {
+		$array_route_code = $apiData['prices'];
+		$rowcount_orderinfo = count($array_route_code);
+	} else {
+		$rowcount_orderinfo = 0;
+	}
 		
 	if($rowcount_orderinfo > 0)
 		{
@@ -105,8 +150,26 @@ if(isset($_GET["showresults"]))
 	$datefrom = $_GET["datefrom"];
 	$dateto = $_GET["dateto"];
 	
-	$reldate1 = substr($datefrom, 0, 10).' 00:00:00';
-	$reldate2 = substr($dateto, 25, 10).' 23:59:59';
+	// Parse concatenated date string (format: "YYYY-MM-DDYYYY-MM-DD" - 20 characters total)
+	// First date starts at position 0, second date starts at position 10
+	if (!empty($datefrom) && strlen($datefrom) >= 20) {
+		// If it's a concatenated string (20 chars), extract both dates
+		$api_date_from = substr($datefrom, 0, 10);
+		$api_date_to = substr($datefrom, 10, 10);
+		$reldate1 = $api_date_from.' 00:00:00';
+		$reldate2 = $api_date_to.' 23:59:59';
+	} else if (!empty($datefrom) && strlen($datefrom) >= 10) {
+		// Single date format (10 chars) - use same date for start and end
+		$api_date_from = substr($datefrom, 0, 10);
+		$api_date_to = substr($datefrom, 0, 10);
+		$reldate1 = $api_date_from.' 00:00:00';
+		$reldate2 = $api_date_to.' 23:59:59';
+	} else {
+		$reldate1 = '';
+		$reldate2 = '';
+		$api_date_from = '';
+		$api_date_to = '';
+	}
 	
 	$saleprice = $_GET["saleprice"];
 	
@@ -149,8 +212,56 @@ if(isset($_GET["showresults"]))
 	<th width="10%">Seats available</th>
 	<th width="15%"></th></tr>';
 	$processedTripInfo = [];
-	$results_trips = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_management_sheet where $airline $route $datefrom order by dep_date asc"); 
-	$rowcount_total_rows = $wpdb->get_var("SELECT COUNT(*) FROM wpk4_backend_stock_management_sheet where $airline $route $datefrom order by dep_date asc");
+	
+	// Call API to get seat availability
+	$apiParams = [];
+	if (!empty($airlineid)) {
+		$apiParams['airline_code'] = $airlineid;
+	}
+	if (!empty($routeid)) {
+		$apiParams['route'] = $routeid;
+	}
+	if (!empty($api_date_from) && !empty($api_date_to)) {
+		$apiParams['date_from'] = $api_date_from;
+		$apiParams['date_to'] = $api_date_to;
+	}
+	if (!empty($saleprice)) {
+		$apiParams['sale_price'] = $saleprice;
+	}
+	
+	$apiUrl = $api_base_url . '/seat-availability/internal/search';
+	$apiData = callApi($apiUrl, $apiParams);
+	
+	// Convert API response to object array format (similar to $wpdb->get_results)
+	$results_trips = [];
+	if ($apiData && isset($apiData['availability'])) {
+		foreach ($apiData['availability'] as $item) {
+			$obj = new stdClass();
+			$obj->auto_id = $item['auto_id'] ?? null;
+			$obj->trip_id = $item['trip_code'] ?? null;
+			$obj->dep_date = $item['travel_date'] ?? null;
+			$obj->current_stock = $item['total_stock'] ?? 0;
+			$obj->booked_pax = $item['booked_pax'] ?? 0;
+			$obj->remaining_seats = $item['remaining_seats'] ?? 0;
+			// Convert product_info array to object for compatibility
+			if (isset($item['product_info']) && is_array($item['product_info'])) {
+				$productInfoObj = new stdClass();
+				foreach ($item['product_info'] as $key => $value) {
+					$productInfoObj->$key = $value;
+				}
+				$obj->product_info = $productInfoObj;
+			} else {
+				$obj->product_info = null;
+			}
+			$obj->product_title = $item['product_title'] ?? '';
+			$obj->adult_price = $item['adult_price'] ?? '';
+			$obj->child_price = $item['child_price'] ?? '';
+			$obj->pricing_id = $item['pricing_id'] ?? null;
+			$results_trips[] = $obj;
+		}
+	}
+	
+	$rowcount_total_rows = count($results_trips);
     
     //echo "SELECT * FROM wpk4_backend_stock_management_sheet where $airline $route $datefrom order by dep_date asc";
 
@@ -180,40 +291,23 @@ if(isset($_GET["showresults"]))
 	   $dep_date_changed = date('d-m-Y', strtotime($dep_date));
 	   $dep_date_changed_with_0 = date('Y-m-d', strtotime($dep_date)).' 00:00:00';
 	   
+	   // Get product info from API response (already included in the data)
 	   $trip_product_id = '';
-	   $tour_name__trip_code = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_product_manager where trip_code='$trip_id' && travel_date='$dep_date_for_product_manager'"); 
-       foreach($tour_name__trip_code as $row_2){ 
-            $trip_product_id = $row_2->product_id;
-			$trip_itinerary = $row_2->itinerary;
-			//echo $trip_id . ' - ' . $dep_date;
-	  }
+	   $trip_itinerary = '';
+	   if (isset($row_all_trips->product_info) && !empty($row_all_trips->product_info)) {
+	       $trip_product_id = $row_all_trips->product_info->product_id ?? '';
+	       $trip_itinerary = $row_all_trips->product_info->itinerary ?? '';
+	   }
 	   
-	   $current_stock_total = 0;
-	   //echo $trip_id . $dep_date_for_product_manager;
-	   	 $results_trips_new_total = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_management_sheet where trip_id ='$trip_id' && dep_date LIKE '$dep_date_for_product_manager%' order by dep_date asc");
-	   	 foreach($results_trips_new_total as $row_all_trips_new_total)
-	        { 
-	            //echo $row_all_trips_new_total->dep_date.'</br>';
-	            //echo $row_all_trips_new_total->current_stock.'</br>';
-	            $current_stock_total = $current_stock_total + (int)$row_all_trips_new_total->current_stock;
-	        }
-
-	   
-		$results_orderinfo = $wpdb->get_results( "SELECT * FROM wpk4_backend_travel_bookings where trip_code='$trip_id' && travel_date='$dep_date' && (payment_status = 'paid' || payment_status = 'partially_paid')"); 
-		$order_count = 0;
-		$pax_count = 0;
-		$product_id_itinerary = $trip_product_id;
-		foreach($results_orderinfo as $row_order_rows)
-		{
-		    //echo $dep_date . ' -> ' ; 
-		    //echo $row_order_rows->total_pax . '</br>';
-			$pax_count += (int)$row_order_rows->total_pax;
-			$order_count++;
-		}
+	   // Get stock and booking info from API response (already calculated)
+	   $current_stock_total = (int)($row_all_trips->current_stock ?? 0);
+	   $pax_count = (int)($row_all_trips->booked_pax ?? 0);
+	   $order_count = 0; // This would need to be added to API if needed, but not used in display
+	   $product_id_itinerary = $trip_product_id;
 
 		$traveldate_fxed = $dep_date;
 		//echo $current_stock_total . ' - ' . $pax_count;
-		$remainingseats = (int)$current_stock_total - (int)$pax_count;
+		$remainingseats = (int)($row_all_trips->remaining_seats ?? 0);
 		if($remainingseats > 0)
 		{
 		$is_record_found = 1;
@@ -372,31 +466,13 @@ if(isset($_GET["showresults"]))
 				$itineraryview_button = '';
 			}
 			
-		// dummy value starts
-		$trip_pricing_id = '123456789987654321';
-		$product_title_drived = '';
-		$trip_adult_rate = '';
-		$trip_child_rate = '';
-		// dummy value ends
-		
-		$results_productinfomation = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_product_manager where trip_code='$trip_id' && travel_date='$dep_date_changed_with_0'"); 
-		foreach($results_productinfomation as $row_productinfomation)
-		{
-			$trip_pricing_id = $row_productinfomation->pricing_id;
-		}
-		
-		    $results_adult_rate = $wpdb->get_results( "SELECT * FROM wpk4_wt_price_category_relation where pricing_id='$trip_pricing_id' && pricing_category_id='954'"); 
-    		foreach($results_adult_rate as $row_adult_rate)
-    		{
-    			$trip_adult_rate = $row_adult_rate->sale_price; // adult rate
-    		}
-		
-		    $results_child_rate = $wpdb->get_results( "SELECT * FROM wpk4_wt_price_category_relation where pricing_id='$trip_pricing_id' && pricing_category_id='953'"); 
-    		foreach($results_child_rate as $row_child_rate)
-    		{
-    			$trip_child_rate = $row_child_rate->sale_price; // child rate
-    		}
+		// Get pricing info from API response (already included in the data)
+		$trip_pricing_id = $row_all_trips->pricing_id ?? '';
+		$product_title_drived = $row_all_trips->product_title ?? '';
+		$trip_adult_rate = $row_all_trips->adult_price ?? '';
+		$trip_child_rate = $row_all_trips->child_price ?? '';
     		
+    	// Sale price filtering is already done by API, but keep this check for consistency
     	if($_GET["saleprice"] != '' && $_GET["saleprice"] != 'NULL' && $_GET["saleprice"] != 'null')
     	{
     	    //echo $trip_adult_rate .' != '. $saleprice.'</br>';
@@ -404,13 +480,7 @@ if(isset($_GET["showresults"]))
     	    {
     	        continue;
     	    }
-    	}	
-		
-		$results_productinfomation = $wpdb->get_results( "SELECT * FROM wpk4_backend_stock_product_manager where trip_code='$trip_id' && travel_date='$dep_date_changed_with_0'"); 
-		foreach($results_productinfomation as $row_productinfomation)
-		{
-			$product_title_drived = $row_productinfomation->product_title;
-		}
+    	}
 			
 			$popup_results .= '<tr style="border:1px solid black;"> 
 			<td>'.$trip_id .'</td>

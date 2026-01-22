@@ -7,10 +7,19 @@ ini_set('display_errors', 1);
 
 require_once(dirname(__FILE__, 5) . '/wp-config.php');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    wp_die("Database connection failed");
+// Define API base URL if not already defined
+if (!defined('API_BASE_URL')) {
+    define('API_BASE_URL', 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api_test_pamitha/public/v1');
 }
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// $mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+// if ($mysqli->connect_error) {
+//     wp_die("Database connection failed");
+// }
+// ============================================================================
 
 /* -------------------------
    Helpers
@@ -48,86 +57,182 @@ $email_input          = isset($_GET['email'])        ? trim((string)$_GET['email
 
 [$travel_from, $travel_to] = parse_range($travel_range_display, $today);
 
-/* -------------------------
-   Build SQL (travel_date range + optional email filter)
-------------------------- */
-$sql = "
-SELECT
-    b.order_id            AS bookingid,
-    b.travel_date         AS travel_date,
-    b.trip_code           AS trip_code,
-    b.order_date          AS order_date,
-    b.payment_modified    AS payment_modified,
-    p.fname               AS fname,
-    p.lname               AS lname,
-    p.email_pax           AS email_pax
-FROM wpk4_backend_travel_bookings b
-JOIN wpk4_backend_travel_booking_pax p
-  ON b.order_id    = p.order_id
- AND b.co_order_id = p.co_order_id
- AND b.product_id  = p.product_id
-WHERE TRIM(COALESCE(p.email_pax, '')) <> ''
-  AND b.travel_date BETWEEN ? AND ?
-";
+// Extract date part from datetime strings for API (Y-m-d format)
+$travel_from_date = substr($travel_from, 0, 10);
+$travel_to_date = substr($travel_to, 0, 10);
 
-$params = [$travel_from, $travel_to];
-$types  = "ss";
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// /* -------------------------
+//    Build SQL (travel_date range + optional email filter)
+// ------------------------- */
+// $sql = "
+// SELECT
+//     b.order_id            AS bookingid,
+//     b.travel_date         AS travel_date,
+//     b.trip_code           AS trip_code,
+//     b.order_date          AS order_date,
+//     b.payment_modified    AS payment_modified,
+//     p.fname               AS fname,
+//     p.lname               AS lname,
+//     p.email_pax           AS email_pax
+// FROM wpk4_backend_travel_bookings b
+// JOIN wpk4_backend_travel_booking_pax p
+//   ON b.order_id    = p.order_id
+//  AND b.co_order_id = p.co_order_id
+//  AND b.product_id  = p.product_id
+// WHERE TRIM(COALESCE(p.email_pax, '')) <> ''
+//   AND b.travel_date BETWEEN ? AND ?
+// ";
+// 
+// $params = [$travel_from, $travel_to];
+// $types  = "ss";
+// 
+// /* Optional email filter:
+//    - if contains '@' -> exact normalized match
+//    - else -> LIKE %term% (case-insensitive)
+// */
+// if ($email_input !== '') {
+//     $needle = normalize_email($email_input);
+//     if (strpos($needle, '@') !== false) {
+//         $sql .= " AND LOWER(TRIM(p.email_pax)) = ? ";
+//         $params[] = $needle;
+//         $types   .= "s";
+//     } else {
+//         $sql .= " AND LOWER(TRIM(p.email_pax)) LIKE ? ";
+//         $params[] = '%' . $needle . '%';
+//         $types   .= "s";
+//     }
+// }
+// 
+// $sql .= " ORDER BY b.auto_id DESC ";
+// 
+// $stmt = $mysqli->prepare($sql);
+// if (!$stmt) wp_die("Prepare failed: " . h($mysqli->error));
+// 
+// $stmt->bind_param($types, ...$params);
+// $stmt->execute();
+// $res = $stmt->get_result();
+// 
+// $rows = [];
+// while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+// $stmt->close();
+// ============================================================================
 
-/* Optional email filter:
-   - if contains '@' -> exact normalized match
-   - else -> LIKE %term% (case-insensitive)
-*/
-if ($email_input !== '') {
-    $needle = normalize_email($email_input);
-    if (strpos($needle, '@') !== false) {
-        $sql .= " AND LOWER(TRIM(p.email_pax)) = ? ";
-        $params[] = $needle;
-        $types   .= "s";
-    } else {
-        $sql .= " AND LOWER(TRIM(p.email_pax)) LIKE ? ";
-        $params[] = '%' . $needle . '%';
-        $types   .= "s";
-    }
+// Fetch data from API
+$api_url = API_BASE_URL;
+$url = API_BASE_URL . '/dupe-pax-email';
+$params = [];
+if (!empty($travel_from_date)) {
+    $params['travel_from'] = $travel_from_date;
+}
+if (!empty($travel_to_date)) {
+    $params['travel_to'] = $travel_to_date;
+}
+if (!empty($email_input)) {
+    $params['email'] = $email_input;
+}
+if (!empty($params)) {
+    $url .= '?' . http_build_query($params);
 }
 
-$sql .= " ORDER BY b.auto_id DESC ";
+$curl = curl_init();
+curl_setopt_array($curl, array(
+    CURLOPT_URL => $url,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_ENCODING => '',
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 0,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => 'GET',
+));
 
-$stmt = $mysqli->prepare($sql);
-if (!$stmt) wp_die("Prepare failed: " . h($mysqli->error));
+$response = curl_exec($curl);
+curl_close($curl);
 
-$stmt->bind_param($types, ...$params);
-$stmt->execute();
-$res = $stmt->get_result();
+$responseData = json_decode($response, true);
 
+// Extract duplicate groups and rows from API response
 $rows = [];
-while ($r = $res->fetch_assoc()) { $rows[] = $r; }
-$stmt->close();
-
-/* -------------------------
-   Group by normalized email & keep distinct order_ids
-------------------------- */
-$groups = [];
-foreach ($rows as $r) {
-    $email = (string)$r['email_pax'];
-    $ekey  = normalize_email($email);
-    if ($ekey === '') continue;
-
-    if (!isset($groups[$ekey])) {
-        $groups[$ekey] = [
-            'email_display' => $email,
-            'order_ids'     => [],
-            'items'         => [],
-        ];
-    }
-    $groups[$ekey]['order_ids'][$r['bookingid']] = true;
-    $groups[$ekey]['items'][] = $r;
-}
-
-/* Keep only groups with >= 2 distinct bookings */
 $dupes = [];
-foreach ($groups as $g) {
-    if (count($g['order_ids']) >= 2) $dupes[] = $g;
+
+if (isset($responseData['status']) && $responseData['status'] === 'success') {
+    // Get duplicate groups from API (already processed)
+    if (isset($responseData['data']['duplicate_groups'])) {
+        $dupes = $responseData['data']['duplicate_groups'];
+    } elseif (isset($responseData['duplicate_groups'])) {
+        $dupes = $responseData['duplicate_groups'];
+    }
+    
+    // Reconstruct rows array from duplicate groups for display purposes
+    // This is needed for the "Source rows scanned" count
+    foreach ($dupes as $group) {
+        if (isset($group['items']) && is_array($group['items'])) {
+            foreach ($group['items'] as $item) {
+                $rows[] = [
+                    'bookingid' => $item['bookingid'] ?? '',
+                    'travel_date' => $item['travel_date'] ?? '',
+                    'trip_code' => $item['trip_code'] ?? '',
+                    'order_date' => $item['order_date'] ?? '',
+                    'payment_modified' => $item['payment_modified'] ?? '',
+                    'fname' => $item['fname'] ?? '',
+                    'lname' => $item['lname'] ?? '',
+                    'email_pax' => $item['email_pax'] ?? ''
+                ];
+            }
+        }
+    }
 }
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// /* -------------------------
+//    Group by normalized email & keep distinct order_ids
+// ------------------------- */
+// $groups = [];
+// foreach ($rows as $r) {
+//     $email = (string)$r['email_pax'];
+//     $ekey  = normalize_email($email);
+//     if ($ekey === '') continue;
+// 
+//     if (!isset($groups[$ekey])) {
+//         $groups[$ekey] = [
+//             'email_display' => $email,
+//             'order_ids'     => [],
+//             'items'         => [],
+//         ];
+//     }
+//     $groups[$ekey]['order_ids'][$r['bookingid']] = true;
+//     $groups[$ekey]['items'][] = $r;
+// }
+// 
+// /* Keep only groups with >= 2 distinct bookings */
+// $dupes = [];
+// foreach ($groups as $g) {
+//     if (count($g['order_ids']) >= 2) $dupes[] = $g;
+// }
+// ============================================================================
+
+// If API didn't return duplicates, fall back to empty array
+if (empty($dupes)) {
+    $dupes = [];
+}
+
+// Convert API response format to match expected format (if needed)
+// API returns 'distinct_orders' array, but code expects 'order_ids' as key-value array
+foreach ($dupes as &$group) {
+    if (isset($group['distinct_orders']) && !isset($group['order_ids'])) {
+        // Convert distinct_orders array to order_ids key-value array for compatibility
+        $group['order_ids'] = [];
+        foreach ($group['distinct_orders'] as $oid) {
+            $group['order_ids'][$oid] = true;
+        }
+    }
+}
+unset($group);
 
 /* Sort dupes by newest travel_date desc */
 usort($dupes, function($a, $b){

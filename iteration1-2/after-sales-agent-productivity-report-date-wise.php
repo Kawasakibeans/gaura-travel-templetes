@@ -9,10 +9,62 @@ ini_set('display_errors', 1);
 
 require_once(dirname(__FILE__, 5) . '/wp-config.php');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    echo "Database connection failed";
-    exit;
+// Helper function to build query string (replacement for WordPress add_query_arg)
+function buildQueryString($args) {
+    $current = $_GET;
+    foreach ($args as $key => $value) {
+        $current[$key] = $value;
+    }
+    return '?' . http_build_query($current);
+}
+
+// Helper function to make API requests
+function makeApiRequest($endpoint, $params = []) {
+    // Check if API_BASE_URL is defined as constant or global variable
+    $baseUrl = '';
+    if (defined('API_BASE_URL')) {
+        $baseUrl = constant('API_BASE_URL');
+    } else {
+        global $API_BASE_URL;
+        $baseUrl = $API_BASE_URL ?? '';
+    }
+    
+    if (empty($baseUrl)) {
+        error_log("API_BASE_URL is not defined");
+        return null;
+    }
+    
+    // Build query string if params exist
+    $queryString = !empty($params) ? '?' . http_build_query($params) : '';
+    $url = rtrim($baseUrl, '/') . '/' . ltrim($endpoint, '/') . $queryString;
+    
+    // Initialize cURL
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/json',
+        'Accept: application/json'
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    if ($error) {
+        error_log("API Request Error: " . $error);
+        return null;
+    }
+    
+    if ($httpCode !== 200) {
+        error_log("API Request Failed with HTTP Code: " . $httpCode);
+        return null;
+    }
+    
+    $data = json_decode($response, true);
+    return $data;
 }
 
 // Filters
@@ -29,95 +81,86 @@ $offset = ($page - 1) * $rows_per_page;
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate)) $startDate = date('Y-m-01');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) $endDate = date('Y-m-t');
 
-// Get all agents
+// Get all agents from API
 $all_agents = [];
-$res = $mysqli->query("SELECT DISTINCT a.agent_name FROM wpk4_agent_after_sale_productivity_report a join wpk4_backend_agent_codes c on a.agent_name = c.agent_name
-WHERE a.agent_name <> 'ABDN' and c.status = 'active' and c.location = 'BOM'
-  ORDER BY a.agent_name ASC");
-if ($res) {
-    while ($row = $res->fetch_assoc()) $all_agents[] = $row['agent_name'];
+$agentParams = [
+    'location' => 'BOM',
+    'status' => 'active'
+];
+$agentResponse = makeApiRequest('/after-sale-productivity-agent-names', $agentParams);
+if ($agentResponse && isset($agentResponse['data'])) {
+    // API returns array of agent names
+    $all_agents = is_array($agentResponse['data']) ? $agentResponse['data'] : [];
 }
 
-// Fetch aggregated data by agent
-function fetchAgentAggregatedData($mysqli, $start, $end, $agentName = '', $limit = null, $offset = 0) {
-    // force integers for pagination
-    $offset = (int)$offset;
-    $limit  = is_null($limit) ? null : (int)$limit;
-
-    $sql = "SELECT 
-        a.date,
-        SUM(a.ssr) AS ssr,
-        SUM(a.gdeal_ticketed) AS gdeals_ticket_issued,
-        SUM(a.fit_ticketed) AS fit_tickets_issued,
-        SUM(a.gdeal_audit) AS gdeals_audit,
-        SUM(a.fit_audit) AS fit_audit,
-        SUM(a.pre_departure) AS pre_departure_checklist,
-        SUM(a.inb_call_count) AS inbound_calls,
-        SUM(a.otb_call_count) AS outbound_calls,
-        SUM(a.escalate) AS escalation_raised,
-        ROUND(SUM(a.inb_call_count_duration) / NULLIF(SUM(a.inb_call_count), 0), 2) AS inbound_calls_aht,
-        ROUND(SUM(a.otb_call_count_duration) / NULLIF(SUM(a.otb_call_count), 0), 2) AS outbound_calls_aht,
-        SUM(a.dc_request) AS dc_handle,
-        SUM(a.sc_case_handle) AS sc_handle
-    FROM wpk4_agent_after_sale_productivity_report a
-    LEFT JOIN wpk4_backend_agent_codes c 
-        ON a.agent_name = c.agent_name 
-       AND c.status = 'active' 
-       AND c.location = 'BOM'
-    WHERE a.`date` BETWEEN ? AND ?
-      AND a.agent_name <> 'ABDN'";
-
-    $params = [$start, $end];
-    $types  = "ss";
-
-    if ($agentName !== '') {
-        $sql .= " AND a.agent_name = ?";
-        $params[] = $agentName;
-        $types   .= "s";
+// Fetch aggregated data from API
+function fetchAgentAggregatedData($start, $end, $agentName = '', $limit = null, $offset = 0) {
+    $params = [
+        'start_date' => $start,
+        'end_date' => $end,
+        'location' => 'BOM',
+        'status' => 'active'
+    ];
+    
+    if (!empty($agentName)) {
+        $params['agent_name'] = $agentName;
     }
-
-    $sql .= " GROUP BY a.date ORDER BY a.date ASC";
-
-    // Inline LIMIT/OFFSET instead of binding (to avoid prepare() failures)
-    if (!is_null($limit)) {
-        $sql .= " LIMIT $offset, $limit";
+    
+    if ($limit !== null) {
+        $params['limit'] = (int)$limit;
+        $params['offset'] = (int)$offset;
     }
-
-    $stmt = $mysqli->prepare($sql);
-    if ($stmt === false) {
-        // Surface the exact SQL error to debug quickly
-        throw new Exception("SQL prepare failed: " . $mysqli->error . "\nSQL: " . $sql);
+    
+    $response = makeApiRequest('/after-sale-productivity-report', $params);
+    
+    if ($response && isset($response['data']) && is_array($response['data'])) {
+        return $response['data'];
     }
-
-    $stmt->bind_param($types, ...$params);
-    if (!$stmt->execute()) {
-        throw new Exception("SQL execute failed: " . $stmt->error);
-    }
-    return $stmt->get_result();
+    
+    return [];
 }
 
+// Fetch all data first to calculate total pages (needed for pagination)
+// Note: This could be optimized if API returns total count
+$allData = fetchAgentAggregatedData($startDate, $endDate, $selected_agent);
+$total_records = count($allData);
+$total_pages = max(1, ceil($total_records / $rows_per_page));
 
-// Count total agents (for pagination)
-$count_sql = "SELECT COUNT(DISTINCT agent_name) AS total_agents 
-              FROM wpk4_agent_after_sale_productivity_report 
-              WHERE date BETWEEN ? AND ?";
-$count_params = [$startDate, $endDate];
-$count_types = "ss";
-if ($selected_agent !== '') {
-    $count_sql .= " AND agent_name = ?";
-    $count_params[] = $selected_agent;
-    $count_types .= "s";
+// Fetch data for current page only
+$apiData = fetchAgentAggregatedData($startDate, $endDate, $selected_agent, $rows_per_page, $offset);
+
+$data =ConvertDataToOldSqlFormat($apiData);
+
+// Convert API Data To Old SQL Format
+function ConvertDataToOldSqlFormat(array $data): array
+{
+    $allowedKeys = [
+        'date',
+        'ssr',
+        'gdeals_ticket_issued',
+        'fit_tickets_issued',
+        'gdeals_audit',
+        'fit_audit',
+        'pre_departure_checklist',
+        'inbound_calls',
+        'outbound_calls',
+        'escalation_raised',
+        'inbound_calls_aht',
+        'outbound_calls_aht',
+        'dc_handle',
+        'sc_handle',
+    ];
+
+    $result = [];
+
+    foreach ($data as $index => $row) {
+        foreach ($allowedKeys as $key) {
+            $result[$index][$key] = $row[$key] ?? null;
+        }
+    }
+
+    return $result;
 }
-$count_stmt = $mysqli->prepare($count_sql);
-$count_stmt->bind_param($count_types, ...$count_params);
-$count_stmt->execute();
-$count_res = $count_stmt->get_result()->fetch_assoc();
-$total_agents = $count_res['total_agents'];
-$total_pages = ceil($total_agents / $rows_per_page);
-
-// Fetch data for current page
-$data = fetchAgentAggregatedData($mysqli, $startDate, $endDate, $selected_agent, $rows_per_page, $offset);
-
     
 // Render table function
 function renderAgentTable($data) {
@@ -142,11 +185,11 @@ function renderAgentTable($data) {
             </thead>
             <tbody>";
 
-    if ($data && $data->num_rows > 0) {
+    if ($data && is_array($data) && count($data) > 0) {
         $totals = [];
         $aht_counts = ['inbound_calls_aht' => 0, 'outbound_calls_aht' => 0]; // count for averaging
 
-        while ($row = $data->fetch_assoc()) {
+        foreach ($data as $row) {
             echo "<tr>";
             foreach ($row as $key => $value) {
                 // Cast numeric columns to float to avoid warnings
@@ -251,17 +294,17 @@ function renderAgentTable($data) {
     $query_args = $_GET;
     if ($page > 1) {
         $query_args['paged'] = $page - 1;
-        echo "<a href='" . htmlspecialchars(add_query_arg($query_args)) . "'>&laquo; Prev</a>";
+        echo "<a href='" . htmlspecialchars(buildQueryString($query_args)) . "'>&laquo; Prev</a>";
     }
     for ($i = 1; $i <= $total_pages; $i++) {
         $query_args['paged'] = $i;
-        $url = htmlspecialchars(add_query_arg($query_args));
-        $active = ($i === $page) ? 'class=\"active\"' : '';
+        $url = htmlspecialchars(buildQueryString($query_args));
+        $active = ($i === $page) ? 'class="active"' : '';
         echo "<a href='$url' $active>$i</a>";
     }
     if ($page < $total_pages) {
         $query_args['paged'] = $page + 1;
-        echo "<a href='" . htmlspecialchars(add_query_arg($query_args)) . "'>Next &raquo;</a>";
+        echo "<a href='" . htmlspecialchars(buildQueryString($query_args)) . "'>Next &raquo;</a>";
     }
     ?>
 </div>

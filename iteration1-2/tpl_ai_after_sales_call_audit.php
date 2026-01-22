@@ -5,7 +5,7 @@
  */
 get_header();
 
-$api = esc_url( get_template_directory_uri() . '/templates/ai_api/get-after-sales-audio-data.php');
+$api = esc_url( get_template_directory_uri() . '/templates-3/ai_api/get-after-sales-audio-data.php');
 ?>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
@@ -357,39 +357,49 @@ tr.low-score td {
 
 <script>
 (function(){
-  const apiBase = "<?php echo $api; ?>";
+  // Wait for DOM to be fully loaded
+  function initApp() {
+    const apiBase = "<?php echo $api; ?>";
 
-  const el = {
-    tabA: document.getElementById('tabA'),
-    tabB: document.getElementById('tabB'),
-    viewA: document.getElementById('viewA'),
-    viewB: document.getElementById('viewB'),
+    const el = {
+      tabA: document.getElementById('tabA'),
+      tabB: document.getElementById('tabB'),
+      viewA: document.getElementById('viewA'),
+      viewB: document.getElementById('viewB'),
 
-    recStatus: document.getElementById('rec-status'),
-    recTable: document.getElementById('rec-table'),
-    btnRefresh: document.getElementById('btnRefresh'),
-    pagerA: document.getElementById('pagerA'),
+      recStatus: document.getElementById('rec-status'),
+      recTable: document.getElementById('rec-table'),
+      btnRefresh: document.getElementById('btnRefresh'),
+      pagerA: document.getElementById('pagerA'),
 
-    fCallId: document.getElementById('fCallId'),
-    fScore: document.getElementById('fScore'),
-    fUrg: document.getElementById('fUrg'),
-    btnApply: document.getElementById('btnApply'),
-    statusB: document.getElementById('statusB'),
-    analysisB: document.getElementById('analysisB'),
+      fCallId: document.getElementById('fCallId'),
+      fScore: document.getElementById('fScore'),
+      fUrg: document.getElementById('fUrg'),
+      btnApply: document.getElementById('btnApply'),
+      statusB: document.getElementById('statusB'),
+      analysisB: document.getElementById('analysisB'),
 
-    faCampaign: document.getElementById('faCampaign'),
-    faDateFrom: document.getElementById('faDateFrom'),
-    faDateTo: document.getElementById('faDateTo'),
-    faAgent: document.getElementById('faAgent'),
-    faScore: document.getElementById('faScore'),
-    faStatus: document.getElementById('faStatus'),
-    faApply: document.getElementById('faApply'),
-    faClear: document.getElementById('faClear'),
-    faMeta: document.getElementById('faMeta'),
-  };
+      faCampaign: document.getElementById('faCampaign'),
+      faDateFrom: document.getElementById('faDateFrom'),
+      faDateTo: document.getElementById('faDateTo'),
+      faAgent: document.getElementById('faAgent'),
+      faScore: document.getElementById('faScore'),
+      faStatus: document.getElementById('faStatus'),
+      faApply: document.getElementById('faApply'),
+      faClear: document.getElementById('faClear'),
+      faMeta: document.getElementById('faMeta'),
+    };
 
-  // ====== Default both dates to YESTERDAY in Australia/Melbourne ======
-  function yesterdayISOInTZ(timeZone='Australia/Melbourne'){
+    // Check if all required elements exist
+    const requiredElements = ['tabA', 'tabB', 'viewA', 'viewB', 'recStatus', 'recTable', 'btnRefresh', 'faApply', 'faClear'];
+    const missingElements = requiredElements.filter(key => !el[key]);
+    if (missingElements.length > 0) {
+      console.error('Missing required elements:', missingElements);
+      return; // Exit if critical elements are missing
+    }
+
+    // ====== Default both dates to YESTERDAY in Australia/Melbourne ======
+    function yesterdayISOInTZ(timeZone='Australia/Melbourne'){
     const now = new Date();
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone, year:'numeric', month:'2-digit', day:'2-digit'
@@ -402,296 +412,337 @@ tr.low-score td {
       if (m < 1) { m = 12; y -= 1; }
       d = new Date(y, m, 0).getDate();
     }
-    return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-  }
-  const YESTERDAY_ISO = yesterdayISOInTZ('Australia/Melbourne');
-
-  function initOrGetPicker(input){
-    return input._flatpickr || flatpickr(input, {
-      dateFormat:'Y-m-d',
-      altInput:true,
-      altFormat:'d-m-Y',
-      allowInput:true
-    });
-  }
-
-  function forceYesterday(){
-    if (window.flatpickr) {
-      const fpFrom = initOrGetPicker(el.faDateFrom);
-      const fpTo   = initOrGetPicker(el.faDateTo);
-      fpFrom.setDate(YESTERDAY_ISO, true);
-      fpTo.setDate(YESTERDAY_ISO, true);
-      el.faDateFrom.value = YESTERDAY_ISO;
-      el.faDateTo.value   = YESTERDAY_ISO;
-    } else {
-      el.faDateFrom.value = YESTERDAY_ISO;
-      el.faDateTo.value   = YESTERDAY_ISO;
+      return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     }
-  }
+    const YESTERDAY_ISO = yesterdayISOInTZ('Australia/Melbourne');
 
-  // Set yesterday at boot & re-assert shortly after
-  forceYesterday();
-  requestAnimationFrame(forceYesterday);
-  setTimeout(forceYesterday, 120);
-
-  // ====== Agent list (only for a single selected date) ======
-  function sameDayStr(a,b){ return a && b && a === b; }
-
-  function updateAgentOptions(){
-    const fromStr = el.faDateFrom.value;
-    const toStr   = el.faDateTo.value;
-
-    if (!sameDayStr(fromStr, toStr) || !fromStr) {
-      el.faAgent.innerHTML = `<option value="">— Select a single date —</option>`;
-      el.faAgent.disabled = true;
-      return;
+    function initOrGetPicker(input){
+      if(!input) return null;
+      return input._flatpickr || flatpickr(input, {
+        dateFormat:'Y-m-d',
+        altInput:true,
+        altFormat:'d-m-Y',
+        allowInput:true
+      });
     }
 
-    const agents = Array.from(new Set(
-      allRows
-        .filter(r => (r.call_date || '').slice(0,10) === fromStr)
-        .map(r => (r.agent_name || '').trim())
-        .filter(Boolean)
-    )).sort((a,b)=>a.localeCompare(b));
-
-    const opts = [`<option value="">— Any —</option>`]
-      .concat(agents.map(a => `<option value="${a.replace(/"/g,'&quot;')}">${a.replace(/</g,'&lt;')}</option>`))
-      .join('');
-
-    el.faAgent.innerHTML = opts;
-    el.faAgent.disabled = false;
-  }
-
-  // ====== Modal ======
-  const modal = {
-    root: document.getElementById('analysisModal'),
-    body: document.getElementById('am-content'),
-    closeBtn: null,
-    open(html){
-      this.body.innerHTML = html;
-      this.root.style.display = 'block';
-      if(!this.closeBtn) this.closeBtn = this.root.querySelector('.am-close');
-      this.closeBtn.onclick = () => this.close();
-      this.root.querySelector('.am-backdrop').onclick = () => this.close();
-      document.addEventListener('keydown', this._esc);
-    },
-    close(){
-      this.root.style.display = 'none';
-      this.body.innerHTML = '';
-      document.removeEventListener('keydown', this._esc);
-    },
-    _esc(e){ if(e.key === 'Escape'){ modal.close(); } }
-  };
-
-  // ====== Utils ======
-  const PAGE_SIZE = 25;
-  let allRows = []; let viewRows = []; let currentPage = 1;
-  const tick = v => v ? '✅' : '❌';
-  const escapeHtml = (s)=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
-
-  function toDateISO(d){
-    if(!d) return null; const [y,m,day]=d.split('-').map(Number);
-    if(!y||!m||!day) return null; return new Date(y,m-1,day);
-  }
-  function inBand(score, band){
-    if(score==null||score===''||typeof score!=='number') return false;
-    if(band==='0-60') return score>=0&&score<60;
-    if(band==='60-85') return score>=60&&score<85;
-    if(band==='85-100') return score>=85&&score<=100;
-    return true;
-  }
-  function statusMatch(analyzed, wanted){
-    if(!wanted) return true; if(wanted==='done') return !!analyzed; if(wanted==='pending') return !analyzed; return true;
-  }
-  function parseCallDate(val){
-    if(!val) return null;
-    const s=String(val).trim(); let m;
-    if((m=s.match(/^(\d{4})[-/](\d{2})[-/](\d{2})$/))){ const y=+m[1],mo=+m[2]-1,d=+m[3]; const dt=new Date(Date.UTC(y,mo,d)); return isNaN(dt)?null:dt; }
-    if((m=s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/))){ const d=+m[1],mo=+m[2]-1,y=+m[3]; const dt=new Date(Date.UTC(y,mo,d)); return isNaN(dt)?null:dt; }
-    const dt=new Date(s); return isNaN(dt)?null:dt;
-  }
-  function formatDMY(dateOrString){
-    const dt = dateOrString instanceof Date ? dateOrString : parseCallDate(dateOrString);
-    if(!dt) return '-';
-    const d=String(dt.getUTCDate()).padStart(2,'0');
-    const m=String(dt.getUTCMonth()+1).padStart(2,'0');
-    const y=dt.getUTCFullYear();
-    return `${d}-${m}-${y}`;
-  }
-
-  // ====== Remarks (modal scorecard) ======
-  const METRIC_LABELS = {
-    acknowledgment: 'Acknowledgment',
-    security: 'Security',
-    support: 'Support',
-    understanding: 'Understanding',
-    resolve: 'Resolve',
-    end_well: 'End well'
-  };
-  function parseRemarks(raw){ if(!raw) return {}; try{ if(typeof raw==='object') return raw||{}; return JSON.parse(raw);}catch(e){return {};} }
-  async function saveRemarkAPI(id, metric, text){
-    const body = new URLSearchParams({ action:'save_remark', id:String(id||''), metric:String(metric||''), text:String(text||'') });
-    const r = await fetch(`${apiBase}`, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
-    const ct = r.headers.get('content-type')||''; const respText = await r.text();
-    if(!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}: ${respText.slice(0,200)}`);
-    if(!ct.includes('application/json')) throw new Error(`Non-JSON: ${respText.slice(0,200)}`);
-    const j = JSON.parse(respText); if(!j.ok) throw new Error(j.error || 'Failed to save remark'); return j;
-  }
-  function renderScorecard(sc, remarksMap, recordId){
-    const safe = k => sc && sc[k] ? sc[k] : {met:false,evidence:'',tooltip:''};
-    const row = (label,key)=>{
-      const v = safe(key);
-      const evidenceText = v.evidence ? String(v.evidence) : '-';
-      const metIcon = tick(!!v.met);
-      const remarkText = (remarksMap && remarksMap[key]) ? String(remarksMap[key]) : '';
-      const hasRemark = !!remarkText;
-      const evidenceHtml = (!!v.met && v.tooltip)
-        ? `<span class="evidence-tip" data-tip="${escapeHtml(v.tooltip)}">${escapeHtml(evidenceText)}</span>`
-        : escapeHtml(evidenceText);
-      const labelHtml = `${escapeHtml(label)} ${hasRemark ? `<button class="remark-icon" data-metric="${key}" data-id="${recordId}" title="View remark">📝 <span>remark</span></button>` : ''}`;
-      const addBtn = `<button class="btn-remark" data-add-remark="1" data-metric="${key}" data-id="${recordId}">Add remark</button>`;
-      return `<tr><td class="metric">${labelHtml}</td><td class="met">${metIcon}</td><td>${evidenceHtml} ${addBtn}</td></tr>`;
-    };
-    return `
-      <table class="scorecard">
-        <thead><tr><th>Metric</th><th class="met">Met</th><th>Evidence</th></tr></thead>
-        <tbody>
-          ${row('Acknowledgment','acknowledgment')}
-          ${row('Security','security')}
-          ${row('Support','support')}
-          ${row('Understanding','understanding')}
-          ${row('Resolve','resolve')}
-          ${row('End well','end_well')}
-        </tbody>
-      </table>`;
-  }
-  function cardFor(item){
-    const score = (typeof item.overall_score === 'number') ? item.overall_score : null;
-    const scoreCls = score == null ? 'mid' : (score >= 85 ? 'good' : score >= 60 ? 'mid' : 'bad');
-    const sentimentCls = item.sentiment === 'negative' ? 'neg' : item.sentiment === 'positive' ? 'pos' : 'neu';
-    const urgCls = item.urgency === 'high' ? 'hi' : item.urgency === 'low' ? 'lo' : 'mid';
-    const lang = item.lang_used || '-';
-    const callLabel = item.call_id ? `#${escapeHtml(item.call_id)}` : (item.id != null ? `#${escapeHtml(item.id)}` : '#');
-    return `
-      <div class="ca-card">
-        <div class="ca-header">
-          <div class="ca-title">${callLabel} • ${escapeHtml(item.uploaded_at || '')}</div>
-          <div class="badges">
-            <span class="badge">lang: ${escapeHtml(lang)}</span>
-            <span class="badge ${'badge-' + sentimentCls}">${escapeHtml(item.sentiment || '-')}</span>
-            <span class="badge ${'badge-' + urgCls}">urgency: ${escapeHtml(item.urgency || '-')}</span>
-            ${score != null ? `<span class="badge badge-score"><span class="score ${scoreCls}">${score}</span>/100</span>` : ''}
-            ${item.call_back_needed ? `<span class="badge badge-cb">call-back</span>` : ''}
-          </div>
-        </div>
-      </div>`;
-  }
-
-  function wireViewHandler(btn){
-    btn.addEventListener('click', ()=>{
-      const id = btn.getAttribute('data-id');
-      btn.textContent = 'Loading…'; btn.disabled = true;
-      fetch(`${apiBase}?action=get_analysis_by_id&id=${encodeURIComponent(id)}`)
-        .then(async r=>{ const ct=r.headers.get('content-type')||''; const body=await r.text();
-          if(!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}: ${body.slice(0,200)}`);
-          if(!ct.includes('application/json')) throw new Error(`Non-JSON response: ${body.slice(0,200)}`);
-          return JSON.parse(body);
-        })
-        .then(j=>{
-          if(!j.ok) throw new Error(j.error || 'Failed');
-          const item = j.evaluation;
-          const remarksMap = parseRemarks(item.remark);
-          const card = cardFor(item);
-          const scHTML = item.scorecard ? renderScorecard(item.scorecard, remarksMap, item.id || item.analysis_id) : '<div class="muted">No scorecard.</div>';
-          const tx = (j.transcript && j.transcript.transcript) ? j.transcript.transcript : '—';
-          const html = `
-            <div class="am-header">
-              <h2 id="am-title" style="margin:0">Analysis for ${escapeHtml(item.file_num || item.call_id || String(item.id || ''))}</h2>
-              <div class="small muted">${escapeHtml(item.uploaded_at || '')} • lang: ${escapeHtml(item.lang_used || '-')}</div>
-            </div>
-            <div class="am-grid"><div>${card}</div><div id="am-scorecard">${scHTML}</div></div>
-            <div><h3 style="margin:.3rem 0">Transcript</h3><div class="am-transcript">${escapeHtml(tx)}</div></div>`;
-          modal.open(html);
-
-          const scRoot = modal.body.querySelector('#am-scorecard');
-          if(scRoot){
-            scRoot.querySelectorAll('.remark-icon').forEach(b=>{
-              b.addEventListener('click', ()=>{
-                const m = b.getAttribute('data-metric');
-                const text = remarksMap[m] || '';
-                if(text) alert(`${METRIC_LABELS[m] || m} — Remark:\n\n${text}`);
-              });
-            });
-            scRoot.querySelectorAll('[data-add-remark]').forEach(b=>{
-              b.addEventListener('click', async ()=>{
-                const metric = b.getAttribute('data-metric');
-                const recId  = b.getAttribute('data-id');
-                const current = remarksMap[metric] || '';
-                const val = prompt(`Add/Update remark for "${METRIC_LABELS[metric] || metric}":`, current);
-                if(val === null) return;
-                b.disabled = true; b.textContent = 'Saving…';
-                try{
-                  const resp = await saveRemarkAPI(recId, metric, val);
-                  const newMap = parseRemarks(resp.remark_json) || {};
-                  Object.assign(remarksMap, newMap);
-                  scRoot.innerHTML = renderScorecard(item.scorecard, remarksMap, recId);
-                }catch(e){ alert('Save failed: ' + e.message); }
-                finally{ b.disabled = false; b.textContent = 'Add remark'; }
-              });
-            });
-          }
-        })
-        .catch(err=>{ console.error(err); alert('Error: ' + err.message); })
-        .finally(()=>{ btn.textContent = 'View analysis'; btn.disabled = false; });
-    });
-  }
-
-  // ====== Filtering & table ======
-  function applyFilters(){
-    const camp=(el.faCampaign.value||'').trim();
-    const band=(el.faScore.value||'').trim();
-    const stat=(el.faStatus.value||'').trim().toLowerCase();
-    const agent=(el.faAgent.value||'').trim();
-    const dFrom=toDateISO(el.faDateFrom.value);
-    const dTo=toDateISO(el.faDateTo.value); if(dTo) dTo.setHours(23,59,59,999);
-
-    viewRows = allRows.filter(r=>{
-      if(camp && (String(r.appl||'').trim()!==camp)) return false;
-      if(dFrom||dTo){
-        const cd = r.call_date ? new Date(r.call_date) : null;
-        if(!cd) return false;
-        if(dFrom && cd < dFrom) return false;
-        if(dTo && cd > dTo) return false;
+    function forceYesterday(){
+      if (window.flatpickr && el.faDateFrom && el.faDateTo) {
+        const fpFrom = initOrGetPicker(el.faDateFrom);
+        const fpTo   = initOrGetPicker(el.faDateTo);
+        if(fpFrom) fpFrom.setDate(YESTERDAY_ISO, true);
+        if(fpTo) fpTo.setDate(YESTERDAY_ISO, true);
+        if(el.faDateFrom) el.faDateFrom.value = YESTERDAY_ISO;
+        if(el.faDateTo) el.faDateTo.value   = YESTERDAY_ISO;
+      } else {
+        if(el.faDateFrom) el.faDateFrom.value = YESTERDAY_ISO;
+        if(el.faDateTo) el.faDateTo.value   = YESTERDAY_ISO;
       }
-      if(agent && String(r.agent_name||'').trim() !== agent) return false;
-      if(band && !inBand(r.score, band)) return false;
-      if(!statusMatch(!!r.analyzed, stat)) return false;
+    }
+
+    // Set yesterday at boot & re-assert shortly after
+    forceYesterday();
+    requestAnimationFrame(forceYesterday);
+    setTimeout(forceYesterday, 120);
+
+    // ====== Agent list (only for a single selected date) ======
+    function sameDayStr(a,b){ return a && b && a === b; }
+
+    function updateAgentOptions(){
+      if(!el.faDateFrom || !el.faDateTo || !el.faAgent) return;
+      const fromStr = el.faDateFrom.value;
+      const toStr   = el.faDateTo.value;
+
+      if (!sameDayStr(fromStr, toStr) || !fromStr) {
+        el.faAgent.innerHTML = `<option value="">— Select a single date —</option>`;
+        el.faAgent.disabled = true;
+        return;
+      }
+
+      const agents = Array.from(new Set(
+        allRows
+          .filter(r => (r.call_date || '').slice(0,10) === fromStr)
+          .map(r => (r.agent_name || '').trim())
+          .filter(Boolean)
+      )).sort((a,b)=>a.localeCompare(b));
+
+      const opts = [`<option value="">— Any —</option>`]
+        .concat(agents.map(a => `<option value="${a.replace(/"/g,'&quot;')}">${a.replace(/</g,'&lt;')}</option>`))
+        .join('');
+
+      el.faAgent.innerHTML = opts;
+      el.faAgent.disabled = false;
+    }
+
+    // ====== Modal ======
+    const modal = {
+      root: document.getElementById('analysisModal'),
+      body: document.getElementById('am-content'),
+      closeBtn: null,
+      open(html){
+        if(!this.body || !this.root) return;
+        this.body.innerHTML = html;
+        this.root.style.display = 'block';
+        if(!this.closeBtn) this.closeBtn = this.root.querySelector('.am-close');
+        if(this.closeBtn) this.closeBtn.onclick = () => this.close();
+        const backdrop = this.root.querySelector('.am-backdrop');
+        if(backdrop) backdrop.onclick = () => this.close();
+        document.addEventListener('keydown', this._esc);
+      },
+      close(){
+        if(!this.root || !this.body) return;
+        this.root.style.display = 'none';
+        this.body.innerHTML = '';
+        document.removeEventListener('keydown', this._esc);
+      },
+      _esc(e){ if(e.key === 'Escape'){ modal.close(); } }
+    };
+
+    // ====== Utils ======
+    const PAGE_SIZE = 25;
+    let allRows = []; let viewRows = []; let currentPage = 1;
+    const tick = v => v ? '✅' : '❌';
+    const escapeHtml = (s)=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+
+    // Normalize date to local timezone midnight (00:00:00) for consistent comparison
+    function normalizeDate(dateOrString){
+      if(!dateOrString) return null;
+      let d;
+      if(dateOrString instanceof Date){
+        d = dateOrString;
+      } else if(typeof dateOrString === 'string'){
+        // Try to parse as YYYY-MM-DD first
+        const match = dateOrString.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+        if(match){
+          const [, y, m, day] = match;
+          d = new Date(+y, +m - 1, +day);  // Local timezone
+        } else {
+          d = new Date(dateOrString);
+        }
+      } else {
+        return null;
+      }
+      if(isNaN(d.getTime())) return null;
+      // Return date normalized to local midnight
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+    
+    function toDateISO(d){
+      if(!d) return null; 
+      const [y,m,day]=d.split('-').map(Number);
+      if(!y||!m||!day) return null; 
+      // Return normalized date (local timezone midnight)
+      return new Date(y, m-1, day);
+    }
+    function inBand(score, band){
+      if(score==null||score===''||typeof score!=='number') return false;
+      if(band==='0-60') return score>=0&&score<60;
+      if(band==='60-85') return score>=60&&score<85;
+      if(band==='85-100') return score>=85&&score<=100;
       return true;
-    });
+    }
+    function statusMatch(analyzed, wanted){
+      if(!wanted) return true; if(wanted==='done') return !!analyzed; if(wanted==='pending') return !analyzed; return true;
+    }
+    function parseCallDate(val){
+      if(!val) return null;
+      const s=String(val).trim(); let m;
+      if((m=s.match(/^(\d{4})[-/](\d{2})[-/](\d{2})$/))){ const y=+m[1],mo=+m[2]-1,d=+m[3]; const dt=new Date(Date.UTC(y,mo,d)); return isNaN(dt)?null:dt; }
+      if((m=s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/))){ const d=+m[1],mo=+m[2]-1,y=+m[3]; const dt=new Date(Date.UTC(y,mo,d)); return isNaN(dt)?null:dt; }
+      const dt=new Date(s); return isNaN(dt)?null:dt;
+    }
+    function formatDMY(dateOrString){
+      const dt = dateOrString instanceof Date ? dateOrString : parseCallDate(dateOrString);
+      if(!dt) return '-';
+      const d=String(dt.getUTCDate()).padStart(2,'0');
+      const m=String(dt.getUTCMonth()+1).padStart(2,'0');
+      const y=dt.getUTCFullYear();
+      return `${d}-${m}-${y}`;
+    }
 
-    const active = [
-      camp && `Campaign: ${camp}`,
-      (el.faDateFrom.value || el.faDateTo.value) && `Date: ${el.faDateFrom.value || '…'} → ${el.faDateTo.value || '…'}`,
-      agent && `Agent: ${agent}`,
-      band && `Score: ${band}`,
-      stat && `Status: ${stat}`
-    ].filter(Boolean).join(' • ');
-    el.faMeta.textContent = active ? `Filters: ${active}` : 'No filters applied';
+    // ====== Remarks (modal scorecard) ======
+    const METRIC_LABELS = {
+      acknowledgment: 'Acknowledgment',
+      security: 'Security',
+      support: 'Support',
+      understanding: 'Understanding',
+      resolve: 'Resolve',
+      end_well: 'End well'
+    };
+    function parseRemarks(raw){ if(!raw) return {}; try{ if(typeof raw==='object') return raw||{}; return JSON.parse(raw);}catch(e){return {};} }
+    async function saveRemarkAPI(id, metric, text){
+      const body = new URLSearchParams({ action:'save_remark', id:String(id||''), metric:String(metric||''), text:String(text||'') });
+      const r = await fetch(`${apiBase}`, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
+      const ct = r.headers.get('content-type')||''; const respText = await r.text();
+      if(!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}: ${respText.slice(0,200)}`);
+      if(!ct.includes('application/json')) throw new Error(`Non-JSON: ${respText.slice(0,200)}`);
+      const j = JSON.parse(respText); if(!j.ok) throw new Error(j.error || 'Failed to save remark'); return j;
+    }
+    function renderScorecard(sc, remarksMap, recordId){
+      const safe = k => sc && sc[k] ? sc[k] : {met:false,evidence:'',tooltip:''};
+      const row = (label,key)=>{
+        const v = safe(key);
+        const evidenceText = v.evidence ? String(v.evidence) : '-';
+        const metIcon = tick(!!v.met);
+        const remarkText = (remarksMap && remarksMap[key]) ? String(remarksMap[key]) : '';
+        const hasRemark = !!remarkText;
+        const evidenceHtml = (!!v.met && v.tooltip)
+          ? `<span class="evidence-tip" data-tip="${escapeHtml(v.tooltip)}">${escapeHtml(evidenceText)}</span>`
+          : escapeHtml(evidenceText);
+        const labelHtml = `${escapeHtml(label)} ${hasRemark ? `<button class="remark-icon" data-metric="${key}" data-id="${recordId}" title="View remark">📝 <span>remark</span></button>` : ''}`;
+        const addBtn = `<button class="btn-remark" data-add-remark="1" data-metric="${key}" data-id="${recordId}">Add remark</button>`;
+        return `<tr><td class="metric">${labelHtml}</td><td class="met">${metIcon}</td><td>${evidenceHtml} ${addBtn}</td></tr>`;
+      };
+      return `
+        <table class="scorecard">
+          <thead><tr><th>Metric</th><th class="met">Met</th><th>Evidence</th></tr></thead>
+          <tbody>
+            ${row('Acknowledgment','acknowledgment')}
+            ${row('Security','security')}
+            ${row('Support','support')}
+            ${row('Understanding','understanding')}
+            ${row('Resolve','resolve')}
+            ${row('End well','end_well')}
+          </tbody>
+        </table>`;
+    }
+    function cardFor(item){
+      const score = (typeof item.overall_score === 'number') ? item.overall_score : null;
+      const scoreCls = score == null ? 'mid' : (score >= 85 ? 'good' : score >= 60 ? 'mid' : 'bad');
+      const sentimentCls = item.sentiment === 'negative' ? 'neg' : item.sentiment === 'positive' ? 'pos' : 'neu';
+      const urgCls = item.urgency === 'high' ? 'hi' : item.urgency === 'low' ? 'lo' : 'mid';
+      const lang = item.lang_used || '-';
+      const callLabel = item.call_id ? `#${escapeHtml(item.call_id)}` : (item.id != null ? `#${escapeHtml(item.id)}` : '#');
+      return `
+        <div class="ca-card">
+          <div class="ca-header">
+            <div class="ca-title">${callLabel} • ${escapeHtml(item.uploaded_at || '')}</div>
+            <div class="badges">
+              <span class="badge">lang: ${escapeHtml(lang)}</span>
+              <span class="badge ${'badge-' + sentimentCls}">${escapeHtml(item.sentiment || '-')}</span>
+              <span class="badge ${'badge-' + urgCls}">urgency: ${escapeHtml(item.urgency || '-')}</span>
+              ${score != null ? `<span class="badge badge-score"><span class="score ${scoreCls}">${score}</span>/100</span>` : ''}
+              ${item.call_back_needed ? `<span class="badge badge-cb">call-back</span>` : ''}
+            </div>
+          </div>
+        </div>`;
+    }
 
-    currentPage = 1;
-    renderTablePage(currentPage);
-    updateDashboard(viewRows);
-    el.recStatus.textContent = `${viewRows.length} record(s) • ${PAGE_SIZE} per page`;
-  }
+    function wireViewHandler(btn){
+      btn.addEventListener('click', ()=>{
+        const id = btn.getAttribute('data-id');
+        btn.textContent = 'Loading…'; btn.disabled = true;
+        fetch(`${apiBase}?action=get_analysis_by_id&id=${encodeURIComponent(id)}`)
+          .then(async r=>{ const ct=r.headers.get('content-type')||''; const body=await r.text();
+            if(!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}: ${body.slice(0,200)}`);
+            if(!ct.includes('application/json')) throw new Error(`Non-JSON response: ${body.slice(0,200)}`);
+            return JSON.parse(body);
+          })
+          .then(j=>{
+            if(!j.ok) throw new Error(j.error || 'Failed');
+            const item = j.evaluation;
+            const remarksMap = parseRemarks(item.remark);
+            const card = cardFor(item);
+            const scHTML = item.scorecard ? renderScorecard(item.scorecard, remarksMap, item.id || item.analysis_id) : '<div class="muted">No scorecard.</div>';
+            const tx = (j.transcript && j.transcript.transcript) ? j.transcript.transcript : '—';
+            const html = `
+              <div class="am-header">
+                <h2 id="am-title" style="margin:0">Analysis for ${escapeHtml(item.file_num || item.call_id || String(item.id || ''))}</h2>
+                <div class="small muted">${escapeHtml(item.uploaded_at || '')} • lang: ${escapeHtml(item.lang_used || '-')}</div>
+              </div>
+              <div class="am-grid"><div>${card}</div><div id="am-scorecard">${scHTML}</div></div>
+              <div><h3 style="margin:.3rem 0">Transcript</h3><div class="am-transcript">${escapeHtml(tx)}</div></div>`;
+            modal.open(html);
 
-  function renderTablePage(page){
-    const rows = viewRows.length ? viewRows : allRows;
-    const total = rows.length;
-    currentPage = Math.max(1, Math.min(page, Math.ceil(Math.max(1,total)/PAGE_SIZE)));
-    const start = (currentPage-1)*PAGE_SIZE;
-    const slice = rows.slice(start, start+PAGE_SIZE);
+            const scRoot = modal.body.querySelector('#am-scorecard');
+            if(scRoot){
+              scRoot.querySelectorAll('.remark-icon').forEach(b=>{
+                b.addEventListener('click', ()=>{
+                  const m = b.getAttribute('data-metric');
+                  const text = remarksMap[m] || '';
+                  if(text) alert(`${METRIC_LABELS[m] || m} — Remark:\n\n${text}`);
+                });
+              });
+              scRoot.querySelectorAll('[data-add-remark]').forEach(b=>{
+                b.addEventListener('click', async ()=>{
+                  const metric = b.getAttribute('data-metric');
+                  const recId  = b.getAttribute('data-id');
+                  const current = remarksMap[metric] || '';
+                  const val = prompt(`Add/Update remark for "${METRIC_LABELS[metric] || metric}":`, current);
+                  if(val === null) return;
+                  b.disabled = true; b.textContent = 'Saving…';
+                  try{
+                    const resp = await saveRemarkAPI(recId, metric, val);
+                    const newMap = parseRemarks(resp.remark_json) || {};
+                    Object.assign(remarksMap, newMap);
+                    scRoot.innerHTML = renderScorecard(item.scorecard, remarksMap, recId);
+                  }catch(e){ alert('Save failed: ' + e.message); }
+                  finally{ b.disabled = false; b.textContent = 'Add remark'; }
+                });
+              });
+            }
+          })
+          .catch(err=>{ console.error(err); alert('Error: ' + err.message); })
+          .finally(()=>{ btn.textContent = 'View analysis'; btn.disabled = false; });
+      });
+    }
 
-    if(!slice.length){ el.recTable.innerHTML='<div class="muted">No matching records.</div>'; el.pagerA.innerHTML=''; return; }
+    // ====== Filtering & table ======
+    function applyFilters(){
+      if(!el.faCampaign || !el.faScore || !el.faStatus || !el.faAgent || !el.faDateFrom || !el.faDateTo) {
+        console.error('❌ Filter elements not found');
+        return;
+      }
+      const camp=(el.faCampaign.value||'').trim();
+      const band=(el.faScore.value||'').trim();
+      const stat=(el.faStatus.value||'').trim().toLowerCase();
+      const agent=(el.faAgent.value||'').trim();
+      
+      // Normalize dates to local timezone midnight for consistent comparison
+      const dFrom = toDateISO(el.faDateFrom.value);
+      let dTo = toDateISO(el.faDateTo.value);
+      // Set dTo to end of day (23:59:59.999) to include all records on that day
+      if(dTo) dTo.setHours(23,59,59,999);
+      
+      viewRows = allRows.filter(r=>{
+        if(camp && (String(r.appl||'').trim()!==camp)) return false;
+        // Only filter by date if date filters are set
+        if(dFrom||dTo){
+          const cd = normalizeDate(r.call_date);
+          if(!cd) return false;
+          if(dFrom && cd < dFrom) return false;
+          if(dTo && cd > dTo) return false;
+        }
+        if(agent && String(r.agent_name||'').trim() !== agent) return false;
+        if(band && !inBand(r.score, band)) return false;
+        if(!statusMatch(!!r.analyzed, stat)) return false;
+        return true;
+      });
+
+      const active = [
+        camp && `Campaign: ${camp}`,
+        (el.faDateFrom.value || el.faDateTo.value) && `Date: ${el.faDateFrom.value || '…'} → ${el.faDateTo.value || '…'}`,
+        agent && `Agent: ${agent}`,
+        band && `Score: ${band}`,
+        stat && `Status: ${stat}`
+      ].filter(Boolean).join(' • ');
+      if(el.faMeta) el.faMeta.textContent = active ? `Filters: ${active}` : 'No filters applied';
+
+      currentPage = 1;
+      renderTablePage(currentPage);
+      updateDashboard(viewRows);
+      if(el.recStatus) el.recStatus.textContent = `${viewRows.length} record(s) • ${PAGE_SIZE} per page`;
+    }
+
+    function renderTablePage(page){
+      // Always use viewRows (filtered results), even if empty
+      const rows = viewRows;
+      const total = rows.length;
+      currentPage = Math.max(1, Math.min(page, Math.ceil(Math.max(1,total)/PAGE_SIZE)));
+      const start = (currentPage-1)*PAGE_SIZE;
+      const slice = rows.slice(start, start+PAGE_SIZE);
+
+      if(!slice.length){ if(el.recTable) el.recTable.innerHTML='<div class="muted">No matching records.</div>'; if(el.pagerA) el.pagerA.innerHTML=''; return; }
 
     const trs = slice.map(r=>{
       const statusTxt = r.analyzed ? 'Done' : 'Pending';
@@ -714,70 +765,136 @@ tr.low-score td {
         </tr>`;
     }).join('');
 
-    el.recTable.innerHTML = `
-      <table class="rec">
-        <thead>
-          <tr>
-            <th>Call date</th><th>Call time</th><th>File num</th><th>Agent</th>
-            <th>Phone no.</th><th>Campaign</th><th>Status</th><th>Score</th><th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>${trs}</tbody>
-      </table>`;
-    el.recTable.querySelectorAll('.do-view').forEach(wireViewHandler);
-    renderPager(total);
-  }
+      if(el.recTable) el.recTable.innerHTML = `
+        <table class="rec">
+          <thead>
+            <tr>
+              <th>Call date</th><th>Call time</th><th>File num</th><th>Agent</th>
+              <th>Phone no.</th><th>Campaign</th><th>Status</th><th>Score</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${trs}</tbody>
+        </table>`;
+      if(el.recTable) el.recTable.querySelectorAll('.do-view').forEach(wireViewHandler);
+      renderPager(total);
+    }
 
-  function renderPager(totalCount){
-    const totalPages = Math.ceil(totalCount / PAGE_SIZE);
-    if(totalPages<=1){ el.pagerA.innerHTML=''; return; }
-    const btn=(label,page,disabled=false,active=false)=>`<button class="page-btn ${active?'active':''}" data-page="${page}" ${disabled?'disabled':''}>${label}</button>`;
-    const windowSize=7;
-    let start=Math.max(1, currentPage-Math.floor(windowSize/2));
-    let end=Math.min(totalPages, start+windowSize-1);
-    start=Math.max(1, Math.min(start, end-windowSize+1));
-    let html='';
-    html += btn('« Prev', Math.max(1,currentPage-1), currentPage===1, false);
-    if(start>1){ html += btn('1',1,false,currentPage===1); if(start>2) html += `<span class="muted">…</span>`; }
-    for(let p=start;p<=end;p++){ html += btn(String(p),p,false,p===currentPage); }
-    if(end<totalPages){ if(end<totalPages-1) html += `<span class="muted">…</span>`; html += btn(String(totalPages), totalPages, false, currentPage===totalPages); }
-    html += btn('Next »', Math.min(totalPages,currentPage+1), currentPage===totalPages, false);
-    el.pagerA.innerHTML=html;
-    el.pagerA.querySelectorAll('.page-btn').forEach(b=>b.addEventListener('click',()=>{ const p=parseInt(b.getAttribute('data-page'),10); if(!isNaN(p)) renderTablePage(p); }));
-  }
+    function renderPager(totalCount){
+      if(!el.pagerA) return;
+      const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+      if(totalPages<=1){ el.pagerA.innerHTML=''; return; }
+      const btn=(label,page,disabled=false,active=false)=>`<button class="page-btn ${active?'active':''}" data-page="${page}" ${disabled?'disabled':''}>${label}</button>`;
+      const windowSize=7;
+      let start=Math.max(1, currentPage-Math.floor(windowSize/2));
+      let end=Math.min(totalPages, start+windowSize-1);
+      start=Math.max(1, Math.min(start, end-windowSize+1));
+      let html='';
+      html += btn('« Prev', Math.max(1,currentPage-1), currentPage===1, false);
+      if(start>1){ html += btn('1',1,false,currentPage===1); if(start>2) html += `<span class="muted">…</span>`; }
+      for(let p=start;p<=end;p++){ html += btn(String(p),p,false,p===currentPage); }
+      if(end<totalPages){ if(end<totalPages-1) html += `<span class="muted">…</span>`; html += btn(String(totalPages), totalPages, false, currentPage===totalPages); }
+      html += btn('Next »', Math.min(totalPages,currentPage+1), currentPage===totalPages, false);
+      el.pagerA.innerHTML=html;
+      el.pagerA.querySelectorAll('.page-btn').forEach(b=>b.addEventListener('click',()=>{ const p=parseInt(b.getAttribute('data-page'),10); if(!isNaN(p)) renderTablePage(p); }));
+    }
 
-  // Restrict call_ids
-  const GT = ['GTCS', 'GTPY', 'GTRF', 'GTET'];
-  const matchesGT = (cid)=>{ const u=(cid||'').toUpperCase(); return GT.some(x=>u.includes(x)); };
+    // Restrict call_ids to specific prefixes
+    const GT = ['GTCS', 'GTPY', 'GTRF', 'GTET'];
+    const matchesGT = (cid)=>{ const u=(cid||'').toUpperCase(); return GT.some(x=>u.includes(x)); };
 
-  function loadRecordings(){
-    el.recStatus.textContent='Loading…'; el.recTable.innerHTML=''; el.pagerA.innerHTML='';
-    fetch(`${apiBase}?action=list_audio_db`)
-      .then(async r => {
-        const ct = r.headers.get('content-type')||''; const body = await r.text();
-        if(!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}: ${body.slice(0,200)}`);
-        if(!ct.includes('application/json')) throw new Error(`Non-JSON response: ${body.slice(0,200)}`);
-        return JSON.parse(body);
+    function loadRecordings(){
+      if(!el.recStatus || !el.recTable || !el.pagerA) {
+        return;
+      }
+      el.recStatus.textContent='Loading…'; el.recTable.innerHTML=''; el.pagerA.innerHTML='';
+      
+      // Request timeout handling (30 seconds)
+      const TIMEOUT_MS = 30000;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        if(el.recStatus) el.recStatus.textContent='Request timeout. API may be slow or unresponsive.';
+        if(el.recTable) el.recTable.innerHTML='<div class="muted" style="color:#991b1b;">Request timeout. The API is taking too long to respond.</div>';
+      }, TIMEOUT_MS);
+      
+      fetch(`${apiBase}?action=list_audio_db`, {
+        signal: controller.signal,
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+        }
       })
-      .then(j=>{
-        if(!j.ok) throw new Error(j.error || 'Failed');
-        allRows = (j.files||[]).filter(r=>matchesGT(r.call_id));
-        const campaigns = Array.from(new Set(allRows.map(r=>(r.appl||'').trim()).filter(Boolean))).sort();
-        el.faCampaign.innerHTML = `<option value="">— Any —</option>` + campaigns.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+        .then(async r => {
+          clearTimeout(timeoutId);
+          
+          const ct = r.headers.get('content-type')||''; 
+          const body = await r.text();
+          
+          if(!r.ok) {
+            throw new Error(`HTTP ${r.status} ${r.statusText}: ${body.slice(0,200)}`);
+          }
+          
+          if(!ct.includes('application/json')) {
+            throw new Error(`Non-JSON response: ${body.slice(0,200)}`);
+          }
+          
+          let parsed;
+          try {
+            parsed = JSON.parse(body);
+          } catch(parseErr) {
+            throw new Error('Invalid JSON: ' + parseErr.message);
+          }
+          
+          return parsed;
+        })
+        .then(j=>{
+          if(!j.ok) {
+            throw new Error(j.error || 'Failed');
+          }
+          
+          const allFiles = j.files || [];
+          
+          if(allFiles.length === 0) {
+            if(el.recStatus) el.recStatus.textContent='No records found in database.';
+            if(el.recTable) el.recTable.innerHTML='<div class="muted">No records available.</div>';
+            return;
+          }
+          
+          // Filter by call_id prefix
+          allRows = allFiles.filter(r=>{
+            return matchesGT(r.call_id);
+          });
+          
+          const campaigns = Array.from(new Set(allRows.map(r=>(r.appl||'').trim()).filter(Boolean))).sort();
+          if(el.faCampaign) el.faCampaign.innerHTML = `<option value="">— Any —</option>` + campaigns.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
 
-        // Build Agent list for yesterday (default single date) & apply filters
-        updateAgentOptions();
-        viewRows = allRows.slice();
-        applyFilters();
-      })
-      .catch(err=>{ console.error(err); el.recStatus.textContent='Error loading records.'; });
-  }
+          // Build Agent list for yesterday (default single date) & apply filters
+          updateAgentOptions();
+          viewRows = allRows.slice();
+          applyFilters();
+        })
+        .catch(err=>{ 
+          clearTimeout(timeoutId);
+          
+          // Handle different error types
+          if(err.name === 'AbortError') {
+            if(el.recStatus) el.recStatus.textContent='Request timeout. API is not responding.';
+            if(el.recTable) el.recTable.innerHTML='<div class="muted" style="color:#991b1b;">Request timeout. The API is taking too long to respond.</div>';
+          } else if(err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+            if(el.recStatus) el.recStatus.textContent='Network error. Cannot reach API.';
+            if(el.recTable) el.recTable.innerHTML='<div class="muted" style="color:#991b1b;">Network error. Cannot reach the API endpoint.</div>';
+          } else {
+            if(el.recStatus) el.recStatus.textContent='Error loading records.';
+            if(el.recTable) el.recTable.innerHTML='<div class="muted" style="color:#991b1b;">Error: ' + escapeHtml(err.message) + '</div>';
+          }
+        });
+    }
 
-  function fmt(n){ return (n||0).toLocaleString(); }
-  function pct(part,total){ if(!total) return '0%'; const p=Math.round((part/total)*100); return p+'%'; }
-  function clamp01(x){ return Math.max(0, Math.min(1,x)); }
+    function fmt(n){ return (n||0).toLocaleString(); }
+    function pct(part,total){ if(!total) return '0%'; const p=Math.round((part/total)*100); return p+'%'; }
+    function clamp01(x){ return Math.max(0, Math.min(1,x)); }
 
-  function updateDashboard(rows){
+    function updateDashboard(rows){
     const total=rows.length;
     const analysed=rows.filter(r=>r.analyzed).length;
     const scored=rows.filter(r=>r.score!=null && r.score!=='').length;
@@ -827,75 +944,85 @@ tr.low-score td {
     box.style.display='block'; box.innerHTML=html;
   }
 
-  // ====== Filtered Analysis (View B) ======
-  function loadCallIdOptions(){
-    fetch(`${apiBase}?action=list_call_ids`).then(r=>r.json()).then(j=>{
-      if(!j.ok) throw new Error(j.error||'Failed to load call_ids');
-      const ids = j.call_ids || [];
-      el.fCallId.innerHTML = `<option value="">— Any —</option><option value="__ALL__">All results</option>` +
-        ids.filter(cid=>{ const u=(cid||'').toUpperCase(); return ['GTCS','GTPY','GTRF','GTET'].some(x=>u.includes(x)); })
-           .map(cid=>`<option value="${escapeHtml(cid)}">${escapeHtml(cid)}</option>`).join('');
-    }).catch(console.error);
+    // ====== Filtered Analysis (View B) ======
+    function loadCallIdOptions(){
+      if(!el.fCallId) return;
+      fetch(`${apiBase}?action=list_call_ids`).then(r=>r.json()).then(j=>{
+        if(!j.ok) throw new Error(j.error||'Failed to load call_ids');
+        const ids = j.call_ids || [];
+        el.fCallId.innerHTML = `<option value="">— Any —</option><option value="__ALL__">All results</option>` +
+          ids.filter(cid=>{ const u=(cid||'').toUpperCase(); return ['GTCS','GTPY','GTRF','GTET'].some(x=>u.includes(x)); })
+             .map(cid=>`<option value="${escapeHtml(cid)}">${escapeHtml(cid)}</option>`).join('');
+      }).catch(console.error);
+    }
+
+    if(el.btnApply) el.btnApply.addEventListener('click', ()=>{
+      const qs = new URLSearchParams();
+      const vCall=el.fCallId ? el.fCallId.value : '', vScore=el.fScore ? el.fScore.value : '', vUrg=el.fUrg ? el.fUrg.value : '';
+      if(vCall==='__ALL__') qs.set('all','1'); else if(vCall!=='') qs.set('call_id', vCall);
+      if(vScore!=='') qs.set('score_band', vScore);
+      if(vUrg!=='') qs.set('urgency', vUrg);
+
+      if([...qs.keys()].length===0){ if(el.statusB) el.statusB.textContent='Please set at least one filter.'; if(el.analysisB) el.analysisB.innerHTML=''; return; }
+
+      if(el.statusB) el.statusB.textContent='Loading…'; if(el.analysisB) el.analysisB.innerHTML='';
+      fetch(`${apiBase}?action=filter_analysis&${qs.toString()}`).then(r=>r.json()).then(j=>{
+        if(!j.ok) throw new Error(j.error||'Filter failed');
+        const list=(j.evaluations||[]).filter(item=>{ const u=(item.call_id||'').toUpperCase(); return ['GTCS','GTPY','GTRF','GTET'].some(x=>u.includes(x)); });
+        if(el.statusB) el.statusB.textContent = `${list.length} result(s)`;
+        if(el.analysisB) el.analysisB.innerHTML = list.map(item=>{
+          const card = cardFor(item);
+          const scHtml = item.scorecard ? renderScorecard(item.scorecard, parseRemarks(item.remark||null), item.id || item.analysis_id) : '<div class="muted">No scorecard.</div>';
+          const tx = item.transcript ? `<pre class="mono" style="margin-top:8px">${escapeHtml(item.transcript)}</pre>` : '<div class="muted">No transcript.</div>';
+          return `${card}${scHtml}${tx}`;
+        }).join('');
+      }).catch(err=>{ console.error(err); if(el.statusB) el.statusB.textContent='Error loading results.'; });
+    });
+
+    // ====== Tabs ======
+    function activate(tab){
+      if(tab==='A'){ el.tabA.classList.add('active'); el.tabB.classList.remove('active'); el.viewA.style.display=''; el.viewB.style.display='none'; document.getElementById('filtersA').style.display=''; }
+      else { el.tabB.classList.add('active'); el.tabA.classList.remove('active'); el.viewB.style.display=''; el.viewA.style.display='none'; document.getElementById('filtersA').style.display='none'; if(el.fCallId && el.fCallId.options.length<=1) loadCallIdOptions(); }
+    }
+    if(el.tabA) el.tabA.onclick = ()=>activate('A');
+    if(el.tabB) el.tabB.onclick = ()=>activate('B');
+
+    // ====== Events ======
+    if(el.btnRefresh) el.btnRefresh.addEventListener('click', loadRecordings);
+    if(el.faApply) el.faApply.addEventListener('click', applyFilters);
+    if(el.faClear) el.faClear.addEventListener('click', ()=>{
+      if(el.faCampaign) el.faCampaign.value=''; 
+      if(el.faDateFrom) el.faDateFrom.value=''; 
+      if(el.faDateTo) el.faDateTo.value=''; 
+      if(el.faAgent) el.faAgent.value='';
+      if(el.faScore) el.faScore.value=''; 
+      if(el.faStatus) el.faStatus.value='';
+      // Snap back to yesterday and rebuild agent list for that day
+      forceYesterday();
+      updateAgentOptions();
+      viewRows = allRows.slice(); 
+      if(el.faMeta) el.faMeta.textContent='No filters applied'; 
+      currentPage=1; 
+      applyFilters();
+    });
+
+    // Update Agent list when dates change; also re-apply filters
+    if(el.faDateFrom) el.faDateFrom.addEventListener('change', ()=>{ updateAgentOptions(); applyFilters(); });
+    if(el.faDateTo) el.faDateTo.addEventListener('change',   ()=>{ updateAgentOptions(); applyFilters(); });
+    if(el.faAgent) el.faAgent.addEventListener('change', applyFilters);
+
+    // ====== Boot ======
+    activate('A');
+    loadRecordings();
+  } // end of initApp
+
+  // Initialize when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+  } else {
+    // DOM already loaded
+    initApp();
   }
-
-  el.btnApply.addEventListener('click', ()=>{
-    const qs = new URLSearchParams();
-    const vCall=el.fCallId.value, vScore=el.fScore.value, vUrg=el.fUrg.value;
-    if(vCall==='__ALL__') qs.set('all','1'); else if(vCall!=='') qs.set('call_id', vCall);
-    if(vScore!=='') qs.set('score_band', vScore);
-    if(vUrg!=='') qs.set('urgency', vUrg);
-
-    if([...qs.keys()].length===0){ el.statusB.textContent='Please set at least one filter.'; el.analysisB.innerHTML=''; return; }
-
-    el.statusB.textContent='Loading…'; el.analysisB.innerHTML='';
-    fetch(`${apiBase}?action=filter_analysis&${qs.toString()}`).then(r=>r.json()).then(j=>{
-      if(!j.ok) throw new Error(j.error||'Filter failed');
-      const list=(j.evaluations||[]).filter(item=>{ const u=(item.call_id||'').toUpperCase(); return ['GTCS','GTPY','GTRF','GTET'].some(x=>u.includes(x)); });
-      el.statusB.textContent = `${list.length} result(s)`;
-      el.analysisB.innerHTML = list.map(item=>{
-        const card = cardFor(item);
-        const scHtml = item.scorecard ? renderScorecard(item.scorecard, parseRemarks(item.remark||null), item.id || item.analysis_id) : '<div class="muted">No scorecard.</div>';
-        const tx = item.transcript ? `<pre class="mono" style="margin-top:8px">${escapeHtml(item.transcript)}</pre>` : '<div class="muted">No transcript.</div>';
-        return `${card}${scHtml}${tx}`;
-      }).join('');
-    }).catch(err=>{ console.error(err); el.statusB.textContent='Error loading results.'; });
-  });
-
-  // ====== Tabs ======
-  function activate(tab){
-    if(tab==='A'){ el.tabA.classList.add('active'); el.tabB.classList.remove('active'); el.viewA.style.display=''; el.viewB.style.display='none'; document.getElementById('filtersA').style.display=''; }
-    else { el.tabB.classList.add('active'); el.tabA.classList.remove('active'); el.viewB.style.display=''; el.viewA.style.display='none'; document.getElementById('filtersA').style.display='none'; if(el.fCallId.options.length<=1) loadCallIdOptions(); }
-  }
-  el.tabA.onclick = ()=>activate('A');
-  el.tabB.onclick = ()=>activate('B');
-
-  // ====== Events ======
-  el.btnRefresh.addEventListener('click', loadRecordings);
-  el.faApply.addEventListener('click', applyFilters);
-  el.faClear.addEventListener('click', ()=>{
-    el.faCampaign.value=''; 
-    el.faDateFrom.value=''; 
-    el.faDateTo.value=''; 
-    el.faAgent.value='';
-    el.faScore.value=''; 
-    el.faStatus.value='';
-    // Snap back to yesterday and rebuild agent list for that day
-    forceYesterday();
-    updateAgentOptions();
-    viewRows = allRows.slice(); 
-    el.faMeta.textContent='No filters applied'; 
-    currentPage=1; 
-    applyFilters();
-  });
-
-  // Update Agent list when dates change; also re-apply filters
-  el.faDateFrom.addEventListener('change', ()=>{ updateAgentOptions(); applyFilters(); });
-  el.faDateTo.addEventListener('change',   ()=>{ updateAgentOptions(); applyFilters(); });
-  el.faAgent.addEventListener('change', applyFilters);
-
-  // ====== Boot ======
-  activate('A');
-  loadRecordings();
 })();
 </script>
 

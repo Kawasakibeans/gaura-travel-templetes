@@ -16,7 +16,21 @@ get_header();?>
 <?php
 date_default_timezone_set("Australia/Melbourne"); 
 error_reporting(E_ALL);
+
+// Load WordPress configuration to get API_BASE_URL
+require_once( dirname( __FILE__, 5 ) . '/wp-config.php' );
+
+// Define API base URL if not already defined (fallback)
+if (!defined('API_BASE_URL')) {
+    define('API_BASE_URL', 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1');
+}
+
+$base_url = API_BASE_URL; // Use global constant
+
+// OLD DATABASE CONNECTION - COMMENTED OUT (now using API endpoints)
+/*
 include("wp-config-custom.php");
+*/
 
         ?>
         <div class="search_bookings">
@@ -81,23 +95,111 @@ include("wp-config-custom.php");
 				
     				if($_GET['email'] != '' && $_GET['id'] != '')
     				{
+    					// Fetch bookings from API endpoint
+    					// API Endpoint: GET /v1/customer-view-bookings/search
+    					// Source: CustomerViewBookingsDAL::searchBookings
+    					// Query parameters: id (required, PNR or order_id), email (required), limit (default: 20)
+    					// Response payload: { "bookings": [...] } or { "status": "success", "data": { "bookings": [...] } }
+    					$search_results = [];
+    					$api_error_message = '';
+    					
+    					try {
+    						$apiUrl = $base_url . '/customer-view-bookings/search';
+    						$queryParams = [
+    							'id' => $_GET['id'],
+    							'email' => $_GET['email'],
+    							'limit' => 20
+    						];
+    						$fullUrl = $apiUrl . '?' . http_build_query($queryParams);
+    						
+    						$ch = curl_init();
+    						curl_setopt($ch, CURLOPT_URL, $fullUrl);
+    						curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    						curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    						curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    						curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    						curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+    						
+    						$response = curl_exec($ch);
+    						$curl_error = curl_error($ch);
+    						$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    						curl_close($ch);
+    						
+    						if ($curl_error) {
+    							$api_error_message = "Connection error: " . $curl_error;
+    							error_log("Customer View Bookings Search API cURL Error: " . $curl_error);
+    						} elseif ($httpCode === 200 && $response) {
+    							$jsonResponse = json_decode($response, true);
+    							
+    							if (json_last_error() !== JSON_ERROR_NONE) {
+    								$api_error_message = "Invalid response format from API";
+    								error_log("Customer View Bookings Search API JSON Error: " . json_last_error_msg());
+    							} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'error') {
+    								$api_error_message = isset($jsonResponse['message']) ? $jsonResponse['message'] : "API returned an error";
+    								error_log("Customer View Bookings Search API Error Response: " . $api_error_message);
+    							} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data']['bookings'])) {
+    								$search_results = is_array($jsonResponse['data']['bookings']) ? $jsonResponse['data']['bookings'] : [];
+    							} elseif (isset($jsonResponse['bookings']) && is_array($jsonResponse['bookings'])) {
+    								$search_results = $jsonResponse['bookings'];
+    							}
+    						} else {
+    							$error_detail = '';
+    							if ($response) {
+    								$errorResponse = json_decode($response, true);
+    								if (isset($errorResponse['message'])) {
+    									$error_detail = $errorResponse['message'];
+    								} else {
+    									$error_detail = substr($response, 0, 200);
+    								}
+    							}
+    							$api_error_message = "API request failed (HTTP $httpCode)" . ($error_detail ? ": " . $error_detail : "");
+    							error_log("Customer View Bookings Search API Error: HTTP $httpCode - " . substr($response, 0, 200));
+    						}
+    					} catch (Exception $e) {
+    						$api_error_message = "Exception: " . $e->getMessage();
+    						error_log("Customer View Bookings Search API Exception: " . $e->getMessage());
+    					}
+    					
+    					// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+    					/*
+    					// Query: Search Bookings
+    					// SELECT DISTINCT b.*, p.pnr, p.email_pax, p.phone_pax
+    					// FROM wpk4_backend_travel_bookings b
+    					// JOIN wpk4_backend_travel_booking_pax p ON b.order_id = p.order_id 
+    					//   AND b.co_order_id = p.co_order_id 
+    					//   AND b.product_id = p.product_id
+    					// WHERE p.pnr LIKE :search_id AND p.email_pax LIKE :email
+    					// ORDER BY p.order_id DESC
+    					// LIMIT :limit
+    					// Source: CustomerViewBookingsDAL::searchBookings
+    					// Method: GET
+    					// Endpoint: /v1/customer-view-bookings/search
+    					// Query parameters: id (required), email (required), limit (default: 20)
+    					
     					$query = "SELECT * FROM wpk4_backend_travel_bookings JOIN wpk4_backend_travel_booking_pax ON  wpk4_backend_travel_bookings.order_id = wpk4_backend_travel_booking_pax.order_id && 
     					wpk4_backend_travel_bookings.co_order_id = wpk4_backend_travel_booking_pax.co_order_id && wpk4_backend_travel_bookings.product_id = wpk4_backend_travel_booking_pax.product_id 
     					where $filter_sql order by wpk4_backend_travel_booking_pax.order_id desc LIMIT 20";
+    					$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
+    					*/
     				}
     				else
     				{
-    					$query = "SELECT * FROM wpk4_backend_travel_bookings where wpk4_backend_travel_bookings.order_id='DUMMYgt00000' order by wpk4_backend_travel_bookings.order_id desc LIMIT 5";
+    					$search_results = [];
     				}
 				
-    				$selection_query = $query;
+    				$row_count = count($search_results);
     				
-    				$result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-    				$row_count = mysqli_num_rows($result);
+    				// Display API error if any
+    				if (!empty($api_error_message)) {
+    					echo '<div style="margin: 20px auto; padding: 15px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; color: #721c24; font-size: 14px;">';
+    					echo '<strong>Error:</strong> ' . htmlspecialchars($api_error_message);
+    					echo '</div>';
+    				}
+    				
                     if($row_count > 0)
             		{
             		    $processedOrders_search = [];
-            		    while($row = mysqli_fetch_assoc($result))
+            		    foreach($search_results as $row)
             		    {
                 		    $order_id = $row['order_id'];
                 		    $order_id_api = $row['order_id'];
@@ -113,6 +215,25 @@ include("wp-config-custom.php");
                     		$booking_date_dmy = date('d/m/Y H:i:s', strtotime($row['order_date'])); 
                             $travel_date_domestic = date('Y-m-d', strtotime($row['travel_date'])); 
                     		$trip_code_domestic = $row['trip_code'];
+                    		
+                    		// Get contact info from API endpoint (included in booking details)
+                    		// API Endpoint: GET /v1/customer-view-bookings/{order_id}
+                    		// Source: CustomerViewBookingsDAL::getBookingDetails (includes contact info)
+                    		// The contact info is already included in the search results, but we can extract it here
+                    		$phone_pax = $row['phone_pax'] ?? '';
+                    		$email_pax = $row['email_pax'] ?? '';
+                    		
+                    		// OLD SQL QUERIES - COMMENTED OUT (now using API endpoint)
+                    		/*
+                    		// Query: Get Contact Info
+                    		// SELECT phone_pax, email_pax 
+                    		// FROM wpk4_backend_travel_booking_pax 
+                    		// WHERE order_id = :order_id 
+                    		//   AND (phone_pax != '' OR email_pax != '')
+                    		// LIMIT 1
+                    		// Source: CustomerViewBookingsDAL::getBookingDetails
+                    		// Method: GET
+                    		// Endpoint: /v1/customer-view-bookings/{order_id} (included in response)
                     		
                     		$query_pax_contact_selection_phone = "SELECT * FROM wpk4_backend_travel_booking_pax where order_id='$order_id' AND phone_pax != ''";
         					$result_pax_contact_selection_phone = mysqli_query($mysqli, $query_pax_contact_selection_phone);
@@ -141,49 +262,62 @@ include("wp-config-custom.php");
             					
             					$email_pax = $row_pax_contact_from_meta['meta_value'];
                     		}
+                    		*/
                     		
                     		$total_pax = $row['total_pax'];
                     		$order_type = $row['order_type'];
                     		$order_type_itinerary = $row['order_type'];
+                    		
+                    		// Payment status is already included in the search results from API
+            				$payment_status = $row['payment_status'] ?? '';
+                    		
+                    		// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+                    		/*
+                    		// Query: Get Booking (for payment status)
+                    		// SELECT * FROM wpk4_backend_travel_bookings WHERE order_id = :order_id LIMIT 1
+                    		// Source: CustomerViewBookingsDAL::getBookingDetails
+                    		// Method: GET
+                    		// Endpoint: /v1/customer-view-bookings/{order_id} (included in search response)
                     		
                     		$query_payment_status = "SELECT * FROM wpk4_backend_travel_bookings where order_id='$order_id'";
         					$result_payment_status = mysqli_query($mysqli, $query_payment_status);
         					$row_payment_status = mysqli_fetch_assoc($result_payment_status);
         					
             				$payment_status = $row_payment_status['payment_status'];
-    				        if($row_payment_status['payment_status'] == 'pending')
+            				*/
+    				        if($payment_status == 'pending')
     						{
     							$txt_payment_status = 'Pending';
     						}
-    						else if($row_payment_status['payment_status'] == 'partially_paid')
+    						else if($payment_status == 'partially_paid')
     						{
     							$txt_payment_status = 'Partially Paid';
     						}
-    						else if($row_payment_status['payment_status'] == 'paid' || $row_payment_status['payment_status'] == 'Paid')
+    						else if($payment_status == 'paid' || $payment_status == 'Paid')
     						{
     							$txt_payment_status = 'Paid';
     						}
-    						else if($row_payment_status['payment_status'] == 'canceled')
+    						else if($payment_status == 'canceled')
     						{
     							$txt_payment_status = 'Xxln With Deposit';
     						}
-    						else if($row_payment_status['payment_status'] == 'N/A')
+    						else if($payment_status == 'N/A')
     						{
     							$txt_payment_status = 'Failed';
     						}
-    						else if($row_payment_status['payment_status'] == 'refund')
+    						else if($payment_status == 'refund')
     						{
     							$txt_payment_status = 'Refund Done';
     						}
-    						else if($row_payment_status['payment_status'] == 'waiting_voucher')
+    						else if($payment_status == 'waiting_voucher')
     						{
     							$txt_payment_status = 'Refund Under Process';
     						}
-    						else if($row_payment_status['payment_status'] == 'receipt_received')
+    						else if($payment_status == 'receipt_received')
     						{
     							$txt_payment_status = 'Receipt Received';
     						}
-    						else if($row_payment_status['payment_status'] == 'voucher_submited')
+    						else if($payment_status == 'voucher_submited')
     						{
     							$txt_payment_status = 'Rebooked';
     						}
@@ -325,9 +459,90 @@ include("wp-config-custom.php");
 											<tbody>
 											<?php
 											$order_id = $order_id_api;
+											
+											// Fetch booking details (WPT bookings) from API endpoint
+											// API Endpoint: GET /v1/customer-view-bookings/{order_id}
+											// Source: CustomerViewBookingsDAL::getBookingDetails
+											// Query parameters: order_id (required)
+											// Response payload: { "booking": {...}, "wpt_bookings": [...], "gds_bookings": [...], "contact_info": {...} }
+											$wpt_bookings = [];
+											$wpt_api_error = '';
+											
+											try {
+												$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_api);
+												
+												$ch = curl_init();
+												curl_setopt($ch, CURLOPT_URL, $apiUrl);
+												curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+												curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+												curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+												curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+												curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+												
+												$response = curl_exec($ch);
+												$curl_error = curl_error($ch);
+												$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+												curl_close($ch);
+												
+												if ($curl_error) {
+													$wpt_api_error = "Connection error: " . $curl_error;
+													error_log("Customer View Bookings Details API cURL Error: " . $curl_error);
+												} elseif ($httpCode === 200 && $response) {
+													$jsonResponse = json_decode($response, true);
+													if (json_last_error() !== JSON_ERROR_NONE) {
+														$wpt_api_error = "Invalid response format from API";
+														error_log("Customer View Bookings Details API JSON Error: " . json_last_error_msg());
+													} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'error') {
+														$wpt_api_error = isset($jsonResponse['message']) ? $jsonResponse['message'] : "API returned an error";
+														error_log("Customer View Bookings Details API Error Response: " . $wpt_api_error);
+													} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data'])) {
+														$bookingData = $jsonResponse['data'];
+														$wpt_bookings = isset($bookingData['wpt_bookings']) && is_array($bookingData['wpt_bookings']) ? $bookingData['wpt_bookings'] : [];
+													} elseif (isset($jsonResponse['wpt_bookings']) && is_array($jsonResponse['wpt_bookings'])) {
+														$wpt_bookings = $jsonResponse['wpt_bookings'];
+													}
+												} else {
+													$error_detail = '';
+													if ($response) {
+														$errorResponse = json_decode($response, true);
+														if (isset($errorResponse['message'])) {
+															$error_detail = $errorResponse['message'];
+														} else {
+															$error_detail = substr($response, 0, 200);
+														}
+													}
+													$wpt_api_error = "API request failed (HTTP $httpCode)" . ($error_detail ? ": " . $error_detail : "");
+													error_log("Customer View Bookings Details API Error: HTTP $httpCode - " . substr($response, 0, 200));
+												}
+											} catch (Exception $e) {
+												$wpt_api_error = "Exception: " . $e->getMessage();
+												error_log("Customer View Bookings Details API Exception: " . $e->getMessage());
+											}
+											
+											// Display error if API call failed
+											if (!empty($wpt_api_error)) {
+												echo '<div style="margin: 10px 0; padding: 10px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; color: #721c24; font-size: 13px;">';
+												echo '<strong>Error loading booking details:</strong> ' . htmlspecialchars($wpt_api_error);
+												echo '</div>';
+											}
+											
+											// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+											/*
+											// Query: Get WPT Bookings
+											// SELECT * FROM wpk4_backend_travel_bookings 
+											// WHERE order_id = :order_id 
+											//   AND (order_type = 'WPT' OR order_type = '')
+											// ORDER BY travel_date ASC
+											// Source: CustomerViewBookingsDAL::getBookingDetails
+											// Method: GET
+											// Endpoint: /v1/customer-view-bookings/{order_id}
+											// Query parameters: order_id (required)
+											
 											$query_summary_loop = "SELECT * FROM wpk4_backend_travel_bookings where order_id='$order_id_api' && (order_type = 'WPT' || order_type = '') order by travel_date asc";
 											$result_summary_loop = mysqli_query($mysqli, $query_summary_loop) or die(mysqli_error($mysqli));
-											while($row_summary_loop = mysqli_fetch_assoc($result_summary_loop))
+											*/
+											
+											foreach($wpt_bookings as $row_summary_loop)
 											{
 												$order_id_summary = $row_summary_loop['order_id'];
 												$product_id_summary = $row_summary_loop['product_id'];
@@ -338,6 +553,52 @@ include("wp-config-custom.php");
 												$trip_code_domestic = $row_summary_loop['trip_code'];
 												$tripcode_plus_trav_date_for_domestic_filter = $trip_code_domestic.$travel_date_domestic; //Eg: MEL-AMD-TR019-TR5742023-03-22
 												
+												// Get pax details from API (already fetched in booking details, but we need PNR here)
+												// The booking details API response should include pax info, but we'll fetch it separately if needed
+												$pnr_received = '';
+												$row_count_pax = [];
+												
+												try {
+													$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_summary) . '/pax';
+													$queryParams = [];
+													if (!empty($co_order_id_summary)) {
+														$queryParams['co_order_id'] = urlencode($co_order_id_summary);
+													}
+													if (!empty($product_id_summary)) {
+														$queryParams['product_id'] = urlencode($product_id_summary);
+													}
+													if (!empty($queryParams)) {
+														$apiUrl .= '?' . http_build_query($queryParams);
+													}
+													
+													$ch = curl_init();
+													curl_setopt($ch, CURLOPT_URL, $apiUrl);
+													curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+													curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+													curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+													curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+													curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+													
+													$response = curl_exec($ch);
+													$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+													curl_close($ch);
+													
+													if ($httpCode === 200 && $response) {
+														$jsonResponse = json_decode($response, true);
+														if (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data']['pax']) && is_array($jsonResponse['data']['pax']) && !empty($jsonResponse['data']['pax'])) {
+															$row_count_pax = $jsonResponse['data']['pax'][0]; // Get first pax record
+															$pnr_received = $row_count_pax['pnr'] ?? '';
+														} elseif (isset($jsonResponse['pax']) && is_array($jsonResponse['pax']) && !empty($jsonResponse['pax'])) {
+															$row_count_pax = $jsonResponse['pax'][0];
+															$pnr_received = $row_count_pax['pnr'] ?? '';
+														}
+													}
+												} catch (Exception $e) {
+													error_log("Customer View Bookings Pax Count API Exception: " . $e->getMessage());
+												}
+												
+												// OLD SQL QUERIES - COMMENTED OUT (now using API endpoint)
+												/*
 												$query_count = "SELECT * FROM wpk4_backend_travel_bookings where order_id='$order_id_summary' && co_order_id='$co_order_id_summary' && product_id = '$product_id_summary'";
 												$result_count = mysqli_query($mysqli, $query_count);
 												$row_count = mysqli_num_rows($result_count);
@@ -350,6 +611,7 @@ include("wp-config-custom.php");
 												$result_count_pax = mysqli_query($mysqli, $query_count_pax);
 												$row_count_pax = mysqli_fetch_assoc($result_count_pax);
 												$pnr_received = $row_count_pax['pnr'];
+												*/
 												$total_paxs++;
 												$x_id = 1;
 												?>
@@ -410,9 +672,89 @@ include("wp-config-custom.php");
 													$x_id++;
 													$auto_numbering++;
 											}
+											// Fetch GDS bookings from API endpoint
+											// API Endpoint: GET /v1/customer-view-bookings/{order_id}
+											// Source: CustomerViewBookingsDAL::getBookingDetails
+											// Query parameters: order_id (required)
+											// Response payload: { "gds_bookings": [...] } (included in same response as WPT bookings)
+											$gds_bookings = [];
+											$gds_api_error = '';
+											
+											try {
+												$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_api);
+												
+												$ch = curl_init();
+												curl_setopt($ch, CURLOPT_URL, $apiUrl);
+												curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+												curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+												curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+												curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+												curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+												
+												$response = curl_exec($ch);
+												$curl_error = curl_error($ch);
+												$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+												curl_close($ch);
+												
+												if ($curl_error) {
+													$gds_api_error = "Connection error: " . $curl_error;
+													error_log("Customer View Bookings GDS API cURL Error: " . $curl_error);
+												} elseif ($httpCode === 200 && $response) {
+													$jsonResponse = json_decode($response, true);
+													if (json_last_error() !== JSON_ERROR_NONE) {
+														$gds_api_error = "Invalid response format from API";
+														error_log("Customer View Bookings GDS API JSON Error: " . json_last_error_msg());
+													} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'error') {
+														$gds_api_error = isset($jsonResponse['message']) ? $jsonResponse['message'] : "API returned an error";
+														error_log("Customer View Bookings GDS API Error Response: " . $gds_api_error);
+													} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data'])) {
+														$bookingData = $jsonResponse['data'];
+														$gds_bookings = isset($bookingData['gds_bookings']) && is_array($bookingData['gds_bookings']) ? $bookingData['gds_bookings'] : [];
+													} elseif (isset($jsonResponse['gds_bookings']) && is_array($jsonResponse['gds_bookings'])) {
+														$gds_bookings = $jsonResponse['gds_bookings'];
+													}
+												} else {
+													$error_detail = '';
+													if ($response) {
+														$errorResponse = json_decode($response, true);
+														if (isset($errorResponse['message'])) {
+															$error_detail = $errorResponse['message'];
+														} else {
+															$error_detail = substr($response, 0, 200);
+														}
+													}
+													$gds_api_error = "API request failed (HTTP $httpCode)" . ($error_detail ? ": " . $error_detail : "");
+													error_log("Customer View Bookings GDS API Error: HTTP $httpCode - " . substr($response, 0, 200));
+												}
+											} catch (Exception $e) {
+												$gds_api_error = "Exception: " . $e->getMessage();
+												error_log("Customer View Bookings GDS API Exception: " . $e->getMessage());
+											}
+											
+											// Display error if API call failed
+											if (!empty($gds_api_error)) {
+												echo '<div style="margin: 10px 0; padding: 10px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; color: #721c24; font-size: 13px;">';
+												echo '<strong>Error loading GDS bookings:</strong> ' . htmlspecialchars($gds_api_error);
+												echo '</div>';
+											}
+											
+											// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+											/*
+											// Query: Get GDS Bookings
+											// SELECT * FROM wpk4_backend_travel_bookings 
+											// WHERE order_id = :order_id 
+											//   AND order_type = 'gds'
+											// ORDER BY travel_date ASC
+											// Source: CustomerViewBookingsDAL::getBookingDetails
+											// Method: GET
+											// Endpoint: /v1/customer-view-bookings/{order_id}
+											// Query parameters: order_id (required)
+											
 											$query_summary_loop = "SELECT * FROM wpk4_backend_travel_bookings where order_id='$order_id_api' && order_type = 'gds'";
 											$result_summary_loop = mysqli_query($mysqli, $query_summary_loop) or die(mysqli_error($mysqli));
-											while($row_summary_loop = mysqli_fetch_assoc($result_summary_loop))
+											*/
+											
+											foreach($gds_bookings as $row_summary_loop)
 											{
 												$order_id_summary = $row_summary_loop['order_id'];
 												$product_id_summary = $row_summary_loop['product_id'];
@@ -425,6 +767,51 @@ include("wp-config-custom.php");
 													$trip_code_domestic = $row_summary_loop['trip_code'];
 													$tripcode_plus_trav_date_for_domestic_filter = $trip_code_domestic.$travel_date_domestic; //Eg: MEL-AMD-TR019-TR5742023-03-22
 													
+													// Get pax details from API (for GDS bookings)
+													$pnr_received = '';
+													$row_count_pax = [];
+													
+													try {
+														$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_summary) . '/pax';
+														$queryParams = [];
+														if (!empty($co_order_id_summary)) {
+															$queryParams['co_order_id'] = urlencode($co_order_id_summary);
+														}
+														if (!empty($product_id_summary)) {
+															$queryParams['product_id'] = urlencode($product_id_summary);
+														}
+														if (!empty($queryParams)) {
+															$apiUrl .= '?' . http_build_query($queryParams);
+														}
+														
+														$ch = curl_init();
+														curl_setopt($ch, CURLOPT_URL, $apiUrl);
+														curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+														curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+														curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+														curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+														curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+														
+														$response = curl_exec($ch);
+														$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+														curl_close($ch);
+														
+														if ($httpCode === 200 && $response) {
+															$jsonResponse = json_decode($response, true);
+															if (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data']['pax']) && is_array($jsonResponse['data']['pax']) && !empty($jsonResponse['data']['pax'])) {
+																$row_count_pax = $jsonResponse['data']['pax'][0];
+																$pnr_received = $row_count_pax['pnr'] ?? '';
+															} elseif (isset($jsonResponse['pax']) && is_array($jsonResponse['pax']) && !empty($jsonResponse['pax'])) {
+																$row_count_pax = $jsonResponse['pax'][0];
+																$pnr_received = $row_count_pax['pnr'] ?? '';
+															}
+														}
+													} catch (Exception $e) {
+														error_log("Customer View Bookings GDS Pax API Exception: " . $e->getMessage());
+													}
+													
+													// OLD SQL QUERIES - COMMENTED OUT (now using API endpoint)
+													/*
 													$query_count = "SELECT * FROM wpk4_backend_travel_bookings where order_id='$order_id_summary' && co_order_id='$co_order_id_summary'";
 													$result_count = mysqli_query($mysqli, $query_count);
 													$row_count = mysqli_num_rows($result_count);
@@ -436,6 +823,7 @@ include("wp-config-custom.php");
 													$query_count_pax = "SELECT * FROM wpk4_backend_travel_booking_pax where order_id='$order_id_summary' && co_order_id='$co_order_id_summary' && product_id='$product_id_summary'";
 													$result_count_pax = mysqli_query($mysqli, $query_count_pax);
 													$row_count_pax = mysqli_fetch_assoc($result_count_pax);
+													*/
 													$total_paxs++;
 													$x_id = 1;
 														 $order_type = $row_summary_loop['order_type'];
@@ -581,9 +969,71 @@ include("wp-config-custom.php");
 														</thead>
 														<tbody>
 														<?php
+														// Fetch pax details from API endpoint
+														// API Endpoint: GET /v1/customer-view-bookings/{order_id}/pax
+														// Source: CustomerViewBookingsDAL::getPaxDetails
+														// Query parameters: order_id (required), co_order_id (optional), product_id (optional)
+														// Response payload: { "pax": [...] } or { "status": "success", "data": { "pax": [...] } }
+														$pax_details = [];
+														
+														try {
+															$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_pax_view) . '/pax';
+															$queryParams = [];
+															if (!empty($co_order_id_pax_view)) {
+																$queryParams['co_order_id'] = urlencode($co_order_id_pax_view);
+															}
+															if (!empty($product_id_pax_view)) {
+																$queryParams['product_id'] = urlencode($product_id_pax_view);
+															}
+															if (!empty($queryParams)) {
+																$apiUrl .= '?' . http_build_query($queryParams);
+															}
+															
+															$ch = curl_init();
+															curl_setopt($ch, CURLOPT_URL, $apiUrl);
+															curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+															curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+															curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+															curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+															curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+															
+															$response = curl_exec($ch);
+															$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+															curl_close($ch);
+															
+															if ($httpCode === 200 && $response) {
+																$jsonResponse = json_decode($response, true);
+																if (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data']['pax'])) {
+																	$pax_details = is_array($jsonResponse['data']['pax']) ? $jsonResponse['data']['pax'] : [];
+																} elseif (isset($jsonResponse['pax']) && is_array($jsonResponse['pax'])) {
+																	$pax_details = $jsonResponse['pax'];
+																} elseif (isset($jsonResponse['data']) && is_array($jsonResponse['data'])) {
+																	$pax_details = $jsonResponse['data'];
+																}
+															} else {
+																error_log("Customer View Bookings Pax Details API Error: HTTP $httpCode - " . substr($response, 0, 200));
+															}
+														} catch (Exception $e) {
+															error_log("Customer View Bookings Pax Details API Exception: " . $e->getMessage());
+														}
+														
+														// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+														/*
+														// Query: Get Pax Details
+														// SELECT * FROM wpk4_backend_travel_booking_pax 
+														// WHERE order_id = :order_id
+														//   AND co_order_id = :co_order_id
+														//   AND product_id = :product_id
+														// Source: CustomerViewBookingsDAL::getPaxDetails
+														// Method: GET
+														// Endpoint: /v1/customer-view-bookings/{order_id}/pax
+														// Query parameters: order_id (required), co_order_id (optional), product_id (optional)
+														
 														$query_summary_loop_pax = "SELECT * FROM wpk4_backend_travel_booking_pax where order_id='$order_id_pax_view' && co_order_id = '$co_order_id_pax_view' && product_id = '$product_id_pax_view'";
 														$result_loop_pax = mysqli_query($mysqli, $query_summary_loop_pax) or die(mysqli_error($mysqli));
-														while($row_loop_pax = mysqli_fetch_assoc($result_loop_pax))
+														*/
+														
+														foreach($pax_details as $row_loop_pax)
 														{
 															$total_paxs++;
 															?>
@@ -1207,9 +1657,55 @@ include("wp-config-custom.php");
 										
 										<?php
 										$order_id = $order_id_api;
+										// Get booking details from API endpoint (for payment section)
+										// API Endpoint: GET /v1/customer-view-bookings/{order_id}
+										// Source: CustomerViewBookingsDAL::getBookingDetails
+										// Query parameters: order_id (required)
+										// Response payload: { "booking": {...} } or { "status": "success", "data": { "booking": {...} } }
+										$row_initial_order = [];
+										
+										try {
+											$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_api);
+											
+											$ch = curl_init();
+											curl_setopt($ch, CURLOPT_URL, $apiUrl);
+											curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+											curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+											curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+											curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+											curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+											
+											$response = curl_exec($ch);
+											$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+											curl_close($ch);
+											
+											if ($httpCode === 200 && $response) {
+												$jsonResponse = json_decode($response, true);
+												if (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data']['booking'])) {
+													$row_initial_order = $jsonResponse['data']['booking'];
+												} elseif (isset($jsonResponse['booking'])) {
+													$row_initial_order = $jsonResponse['booking'];
+												}
+											} else {
+												error_log("Customer View Bookings Initial Order API Error: HTTP $httpCode - " . substr($response, 0, 200));
+											}
+										} catch (Exception $e) {
+											error_log("Customer View Bookings Initial Order API Exception: " . $e->getMessage());
+										}
+										
+										// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+										/*
+										// Query: Get Booking
+										// SELECT * FROM wpk4_backend_travel_bookings WHERE order_id = :order_id LIMIT 1
+										// Source: CustomerViewBookingsDAL::getBookingDetails
+										// Method: GET
+										// Endpoint: /v1/customer-view-bookings/{order_id}
+										// Query parameters: order_id (required)
+										
 										$query_initial_order = "SELECT * FROM wpk4_backend_travel_bookings where order_id='$order_id_api'";
 										$result_initial_order = mysqli_query($mysqli, $query_initial_order);
 										$row_initial_order = mysqli_fetch_assoc($result_initial_order);
+										*/
 										$order_date = $row_initial_order['order_date'];
 										$order_type_paymentblock = $row_initial_order['order_type'];
 										$payment_status = $row_initial_order['payment_status'];
@@ -1248,15 +1744,92 @@ include("wp-config-custom.php");
 										<table style="font-size:13px;">
 											<tr><th>Payment Date</th><th>Paid Amount</th><th>Reference No</th></tr>
 											<?php
-											$query_payment_history = "SELECT * FROM wpk4_backend_travel_payment_history where order_id='$order_id_api'";
-											$result_payment_history = mysqli_query($mysqli, $query_payment_history);
-											while($row_payment_history = mysqli_fetch_assoc($result_payment_history))
-											{
+// Fetch payment history from API endpoint
+// API Endpoint: GET /v1/customer-view-bookings/{order_id}/payments
+// Source: CustomerViewBookingsDAL::getPaymentHistory
+// Query parameters: order_id (required, in URL path)
+// Response payload: { "payments": [...] } or { "status": "success", "data": { "payments": [...] } }
+$paymentHistoryRows = [];
+$payment_api_error = '';
+
+try {
+	$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_api) . '/payments';
+	
+	$chPayments = curl_init();
+	curl_setopt($chPayments, CURLOPT_URL, $apiUrl);
+	curl_setopt($chPayments, CURLOPT_RETURNTRANSFER, true);
+	curl_setopt($chPayments, CURLOPT_FOLLOWLOCATION, true);
+	curl_setopt($chPayments, CURLOPT_TIMEOUT, 30);
+	curl_setopt($chPayments, CURLOPT_SSL_VERIFYPEER, false);
+	curl_setopt($chPayments, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+	
+	$paymentsResponse = curl_exec($chPayments);
+	$paymentsError = curl_error($chPayments);
+	$paymentsHttpCode = curl_getinfo($chPayments, CURLINFO_HTTP_CODE);
+	curl_close($chPayments);
+	
+	if ($paymentsError) {
+		$payment_api_error = "Connection error: " . $paymentsError;
+		error_log('Customer View Bookings Payment History API cURL Error: ' . $paymentsError);
+	} elseif ($paymentsHttpCode === 200 && $paymentsResponse) {
+		$decodedPayments = json_decode($paymentsResponse, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			$payment_api_error = "Invalid response format from API";
+			error_log('Customer View Bookings Payment History API JSON Error: ' . json_last_error_msg());
+		} elseif (isset($decodedPayments['status']) && $decodedPayments['status'] === 'error') {
+			$payment_api_error = isset($decodedPayments['message']) ? $decodedPayments['message'] : "API returned an error";
+			error_log('Customer View Bookings Payment History API Error Response: ' . $payment_api_error);
+		} elseif (json_last_error() === JSON_ERROR_NONE) {
+			if (isset($decodedPayments['status']) && $decodedPayments['status'] === 'success' && isset($decodedPayments['data']['payments'])) {
+				$paymentHistoryRows = is_array($decodedPayments['data']['payments']) ? $decodedPayments['data']['payments'] : [];
+			} elseif (isset($decodedPayments['payments']) && is_array($decodedPayments['payments'])) {
+				$paymentHistoryRows = $decodedPayments['payments'];
+			} elseif (isset($decodedPayments['data']) && is_array($decodedPayments['data'])) {
+				$paymentHistoryRows = $decodedPayments['data'];
+			}
+		}
+	} else {
+		$error_detail = '';
+		if ($paymentsResponse) {
+			$errorResponse = json_decode($paymentsResponse, true);
+			if (isset($errorResponse['message'])) {
+				$error_detail = $errorResponse['message'];
+			} else {
+				$error_detail = substr($paymentsResponse, 0, 200);
+			}
+		}
+		$payment_api_error = "API request failed (HTTP $paymentsHttpCode)" . ($error_detail ? ": " . $error_detail : "");
+		error_log('Customer View Bookings Payment History API Error: HTTP ' . $paymentsHttpCode . ' - ' . substr($paymentsResponse, 0, 200));
+	}
+} catch (Exception $e) {
+	$payment_api_error = "Exception: " . $e->getMessage();
+	error_log('Customer View Bookings Payment History API Exception: ' . $e->getMessage());
+}
+
+// Display error if API call failed
+if (!empty($payment_api_error)) {
+	echo '<div style="margin: 10px 0; padding: 10px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; color: #721c24; font-size: 13px;">';
+	echo '<strong>Error loading payment history:</strong> ' . htmlspecialchars($payment_api_error);
+	echo '</div>';
+}
+
+if (!empty($paymentHistoryRows)):
+	foreach ($paymentHistoryRows as $row_payment_history):
 											?>
 											<tr><td><?php echo date('d/m/Y H:i:s', strtotime($row_payment_history['process_date'])); ?></td><td><?php echo $row_payment_history['trams_received_amount']; ?></td><td><?php echo $row_payment_history['reference_no']; ?></td></tr>
 											
 											<?php
-											}
+	endforeach;
+endif;
+
+/* Original SQL query retained for reference
+$query_payment_history = "SELECT * FROM wpk4_backend_travel_payment_history where order_id='$order_id_api'";
+$result_payment_history = mysqli_query($mysqli, $query_payment_history);
+while($row_payment_history = mysqli_fetch_assoc($result_payment_history))
+{
+	// render rows
+}
+*/
 											
 											if($order_type_paymentblock == 'gds')
 											{
@@ -1281,16 +1854,108 @@ include("wp-config-custom.php");
 										<form action="#" name="statusupdate" method="post" enctype="multipart/form-data" >
 										<h6>Attachments</h6>
 										<?php
+										// Fetch payment attachments from API endpoint
+										// API Endpoint: GET /v1/customer-view-bookings/{order_id}/attachments
+										// Source: CustomerViewBookingsDAL::getPaymentAttachments
+										// Query parameters: order_id (required), co_order_id (optional), product_id (optional)
+										// Response payload: { "attachments": [...] } or { "status": "success", "data": { "attachments": [...] } }
+										$payment_attachments = [];
+										$attachments_api_error = '';
+										
+										try {
+											$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_api) . '/attachments';
+											$queryParams = [];
+											if (!empty($co_order_id_api)) {
+												$queryParams['co_order_id'] = urlencode($co_order_id_api);
+											}
+											if (!empty($product_id_api)) {
+												$queryParams['product_id'] = urlencode($product_id_api);
+											}
+											if (!empty($queryParams)) {
+												$apiUrl .= '?' . http_build_query($queryParams);
+											}
+											
+											$ch = curl_init();
+											curl_setopt($ch, CURLOPT_URL, $apiUrl);
+											curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+											curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+											curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+											curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+											curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+											
+											$response = curl_exec($ch);
+											$curl_error = curl_error($ch);
+											$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+											curl_close($ch);
+											
+											if ($curl_error) {
+												$attachments_api_error = "Connection error: " . $curl_error;
+												error_log("Customer View Bookings Payment Attachments API cURL Error: " . $curl_error);
+											} elseif ($httpCode === 200 && $response) {
+												$jsonResponse = json_decode($response, true);
+												if (json_last_error() !== JSON_ERROR_NONE) {
+													$attachments_api_error = "Invalid response format from API";
+													error_log("Customer View Bookings Payment Attachments API JSON Error: " . json_last_error_msg());
+												} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'error') {
+													$attachments_api_error = isset($jsonResponse['message']) ? $jsonResponse['message'] : "API returned an error";
+													error_log("Customer View Bookings Payment Attachments API Error Response: " . $attachments_api_error);
+												} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data']['attachments'])) {
+													$payment_attachments = is_array($jsonResponse['data']['attachments']) ? $jsonResponse['data']['attachments'] : [];
+												} elseif (isset($jsonResponse['attachments']) && is_array($jsonResponse['attachments'])) {
+													$payment_attachments = $jsonResponse['attachments'];
+												}
+											} else {
+												$error_detail = '';
+												if ($response) {
+													$errorResponse = json_decode($response, true);
+													if (isset($errorResponse['message'])) {
+														$error_detail = $errorResponse['message'];
+													} else {
+														$error_detail = substr($response, 0, 200);
+													}
+												}
+												$attachments_api_error = "API request failed (HTTP $httpCode)" . ($error_detail ? ": " . $error_detail : "");
+												error_log("Customer View Bookings Payment Attachments API Error: HTTP $httpCode - " . substr($response, 0, 200));
+											}
+										} catch (Exception $e) {
+											$attachments_api_error = "Exception: " . $e->getMessage();
+											error_log("Customer View Bookings Payment Attachments API Exception: " . $e->getMessage());
+										}
+										
+										// Display error if API call failed
+										if (!empty($attachments_api_error)) {
+											echo '<div style="margin: 10px 0; padding: 10px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; color: #721c24; font-size: 13px;">';
+											echo '<strong>Error loading payment attachments:</strong> ' . htmlspecialchars($attachments_api_error);
+											echo '</div>';
+										}
+										
+										// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+										/*
+										// Query: Get Payment Attachments
+										// SELECT * FROM wpk4_backend_travel_booking_update_history 
+										// WHERE order_id = :order_id
+										//   AND co_order_id = :co_order_id
+										//   AND merging_id = :product_id
+										//   AND meta_key LIKE 'G360Events'
+										//   AND meta_value LIKE 'g360paymentattachments'
+										// ORDER BY auto_id DESC
+										// Source: CustomerViewBookingsDAL::getPaymentAttachments
+										// Method: GET
+										// Endpoint: /v1/customer-view-bookings/{order_id}/attachments
+										// Query parameters: order_id (required), co_order_id (optional), product_id (optional)
+										
 										$query_all_refunds_latest_chat = "SELECT * FROM wpk4_backend_travel_booking_update_history where order_id = '$order_id_api' && co_order_id = '$co_order_id_api' && merging_id = '$product_id_api' && meta_key like 'G360Events' && meta_value like 'g360paymentattachments' order by auto_id desc";
 										$result_all_refunds_latest_chat = mysqli_query($mysqli, $query_all_refunds_latest_chat);
 										$row_all_refunds_latest_chat_count = mysqli_num_rows($result_all_refunds_latest_chat);
-										if($row_all_refunds_latest_chat_count > 0)
+										*/
+										
+										if(count($payment_attachments) > 0)
 										{
 											?>
 											<table style="font-size:13px;">
 											<tr><td width="70%">Attachment</td><td>Date uploaded</td><td>Updated by</td></tr>
 											<?php
-											while($row_all_refunds_latest_chat = mysqli_fetch_assoc($result_all_refunds_latest_chat))
+											foreach($payment_attachments as $row_all_refunds_latest_chat)
 											{
 												$payment_file_extension = pathinfo($row_all_refunds_latest_chat['meta_key_data'], PATHINFO_EXTENSION);
 												if($payment_file_extension == 'pdf' || $payment_file_extension == 'txt')
@@ -1318,21 +1983,180 @@ include("wp-config-custom.php");
 									
 									<div id="portal_request_<?php echo $order_id_api; ?><?php echo $co_order_id_api; ?><?php echo $product_id_api; ?>" class="tabcontent" style="display:none;">
 											<?php
-											$order_id = $order_id_api;
-											
-											$array_pax_pnr = array();
-											$query_summary_loop_pax = "SELECT * FROM wpk4_backend_travel_booking_pax where order_id='$order_id'";
-											$result_loop_pax = mysqli_query($mysqli, $query_summary_loop_pax) or die(mysqli_error($mysqli));
-											while($row_loop_pax = mysqli_fetch_assoc($result_loop_pax))
-											{
-												$array_pax_pnr[] = $row_loop_pax['pnr'];
-											}
-											$array_pax_pnr = array_unique($array_pax_pnr);		        
-											$array_pax_pnr_separated = implode(", ", $array_pax_pnr);
+$order_id = $order_id_api;
 
-											$query_task_history = "SELECT * FROM wpk4_backend_user_portal_requests where reservation_ref='$order_id_api' OR reservation_ref IN ('$array_pax_pnr_separated')";
-											$result_task_history = mysqli_query($mysqli, $query_task_history);
-											$count_task_history_userportal = mysqli_num_rows($result_task_history);
+// Fetch pax details from API endpoint to get PNRs
+// API Endpoint: GET /v1/customer-view-bookings/{order_id}/pax
+// Source: CustomerViewBookingsDAL::getPaxDetails
+// Query parameters: order_id (required), co_order_id (optional), product_id (optional)
+// Response payload: { "pax": [...] } or { "status": "success", "data": { "pax": [...] } }
+$array_pax_pnr = [];
+
+try {
+	$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id) . '/pax';
+	$queryParams = [];
+	if (!empty($co_order_id_api)) {
+		$queryParams['co_order_id'] = urlencode($co_order_id_api);
+	}
+	if (!empty($product_id_api)) {
+		$queryParams['product_id'] = urlencode($product_id_api);
+	}
+	if (!empty($queryParams)) {
+		$apiUrl .= '?' . http_build_query($queryParams);
+	}
+	
+	$chPax = curl_init();
+	curl_setopt($chPax, CURLOPT_URL, $apiUrl);
+	curl_setopt($chPax, CURLOPT_RETURNTRANSFER, true);
+	curl_setopt($chPax, CURLOPT_FOLLOWLOCATION, true);
+	curl_setopt($chPax, CURLOPT_TIMEOUT, 30);
+	curl_setopt($chPax, CURLOPT_SSL_VERIFYPEER, false);
+	curl_setopt($chPax, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+	
+	$paxResponse = curl_exec($chPax);
+	$paxError = curl_error($chPax);
+	$paxHttpCode = curl_getinfo($chPax, CURLINFO_HTTP_CODE);
+	curl_close($chPax);
+	
+	if ($paxHttpCode === 200 && $paxResponse) {
+		$decodedPax = json_decode($paxResponse, true);
+		if (json_last_error() === JSON_ERROR_NONE) {
+			$paxData = [];
+			if (isset($decodedPax['status']) && $decodedPax['status'] === 'success' && isset($decodedPax['data']['pax'])) {
+				$paxData = is_array($decodedPax['data']['pax']) ? $decodedPax['data']['pax'] : [];
+			} elseif (isset($decodedPax['pax']) && is_array($decodedPax['pax'])) {
+				$paxData = $decodedPax['pax'];
+			} elseif (isset($decodedPax['data']) && is_array($decodedPax['data'])) {
+				$paxData = $decodedPax['data'];
+			}
+			
+			foreach ($paxData as $paxRow) {
+				if (!empty($paxRow['pnr'])) {
+					$array_pax_pnr[] = $paxRow['pnr'];
+				}
+			}
+		}
+	} else {
+		error_log('Customer View Bookings Pax API Error: HTTP ' . $paxHttpCode . ' - ' . substr($paxResponse, 0, 200));
+	}
+} catch (Exception $e) {
+	error_log('Customer View Bookings Pax API Exception: ' . $e->getMessage());
+}
+
+// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+/*
+// Query: Get Pax Details
+// SELECT * FROM wpk4_backend_travel_booking_pax 
+// WHERE order_id = :order_id
+// Source: CustomerViewBookingsDAL::getPaxDetails
+// Method: GET
+// Endpoint: /v1/customer-view-bookings/{order_id}/pax
+// Query parameters: order_id (required), co_order_id (optional), product_id (optional)
+
+$query_summary_loop_pax = "SELECT * FROM wpk4_backend_travel_booking_pax where order_id='$order_id'";
+$result_loop_pax = mysqli_query($mysqli, $query_summary_loop_pax) or die(mysqli_error($mysqli));
+while($row_loop_pax = mysqli_fetch_assoc($result_loop_pax))
+{
+	$array_pax_pnr[] = $row_loop_pax['pnr'];
+}
+*/
+
+$array_pax_pnr = array_unique($array_pax_pnr);
+$array_pax_pnr_separated = implode("', '", $array_pax_pnr);
+if (!empty($array_pax_pnr_separated)) {
+	$array_pax_pnr_separated = "'" . $array_pax_pnr_separated . "'";
+}
+
+// Fetch portal requests from API endpoint
+// API Endpoint: GET /v1/customer-view-bookings/{order_id}/portal-requests
+// Source: CustomerViewBookingsDAL::getPortalRequests
+// Query parameters: order_id (required), pnrs (optional, comma-separated)
+// Response payload: { "requests": [...] } or { "status": "success", "data": { "requests": [...] } }
+$portal_requests = [];
+$count_task_history_userportal = 0;
+$portal_api_error = '';
+
+try {
+	$apiUrl = $base_url . '/customer-view-bookings/' . urlencode($order_id_api) . '/portal-requests';
+	$queryParams = [];
+	if (!empty($array_pax_pnr_separated)) {
+		$queryParams['pnrs'] = urlencode($array_pax_pnr_separated);
+	}
+	if (!empty($queryParams)) {
+		$apiUrl .= '?' . http_build_query($queryParams);
+	}
+	
+	$ch = curl_init();
+	curl_setopt($ch, CURLOPT_URL, $apiUrl);
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+	curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+	curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+	curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+	curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Accept: application/json']);
+	
+	$response = curl_exec($ch);
+	$curl_error = curl_error($ch);
+	$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+	curl_close($ch);
+	
+	if ($curl_error) {
+		$portal_api_error = "Connection error: " . $curl_error;
+		error_log("Customer View Bookings Portal Requests API cURL Error: " . $curl_error);
+	} elseif ($httpCode === 200 && $response) {
+		$jsonResponse = json_decode($response, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			$portal_api_error = "Invalid response format from API";
+			error_log("Customer View Bookings Portal Requests API JSON Error: " . json_last_error_msg());
+		} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'error') {
+			$portal_api_error = isset($jsonResponse['message']) ? $jsonResponse['message'] : "API returned an error";
+			error_log("Customer View Bookings Portal Requests API Error Response: " . $portal_api_error);
+		} elseif (isset($jsonResponse['status']) && $jsonResponse['status'] === 'success' && isset($jsonResponse['data']['requests'])) {
+			$portal_requests = is_array($jsonResponse['data']['requests']) ? $jsonResponse['data']['requests'] : [];
+			$count_task_history_userportal = count($portal_requests);
+		} elseif (isset($jsonResponse['requests']) && is_array($jsonResponse['requests'])) {
+			$portal_requests = $jsonResponse['requests'];
+			$count_task_history_userportal = count($portal_requests);
+		}
+	} else {
+		$error_detail = '';
+		if ($response) {
+			$errorResponse = json_decode($response, true);
+			if (isset($errorResponse['message'])) {
+				$error_detail = $errorResponse['message'];
+			} else {
+				$error_detail = substr($response, 0, 200);
+			}
+		}
+		$portal_api_error = "API request failed (HTTP $httpCode)" . ($error_detail ? ": " . $error_detail : "");
+		error_log("Customer View Bookings Portal Requests API Error: HTTP $httpCode - " . substr($response, 0, 200));
+	}
+} catch (Exception $e) {
+	$portal_api_error = "Exception: " . $e->getMessage();
+	error_log("Customer View Bookings Portal Requests API Exception: " . $e->getMessage());
+}
+
+// Display error if API call failed
+if (!empty($portal_api_error)) {
+	echo '<div style="margin: 10px 0; padding: 10px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; color: #721c24; font-size: 13px;">';
+	echo '<strong>Error loading portal requests:</strong> ' . htmlspecialchars($portal_api_error);
+	echo '</div>';
+}
+
+// OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+/*
+// Query: Get Portal Requests
+// SELECT * FROM wpk4_backend_user_portal_requests 
+// WHERE reservation_ref = :order_id
+//   OR reservation_ref IN (:pnr1, :pnr2, ...)
+// Source: CustomerViewBookingsDAL::getPortalRequests
+// Method: GET
+// Endpoint: /v1/customer-view-bookings/{order_id}/portal-requests
+// Query parameters: order_id (required), pnrs (optional, comma-separated)
+
+$query_task_history = "SELECT * FROM wpk4_backend_user_portal_requests where reservation_ref='$order_id_api' OR reservation_ref IN ('$array_pax_pnr_separated')";
+$result_task_history = mysqli_query($mysqli, $query_task_history);
+$count_task_history_userportal = mysqli_num_rows($result_task_history);
+*/
 											
 											if($count_task_history_userportal > 0)
 											{
@@ -1341,7 +2165,7 @@ include("wp-config-custom.php");
 												<table style="font-size:13px;">
 													<tr><th>CaseID</th><th>Task Type</th><th>Initiated on</th><th>Status</th><th>&nbsp;</th></tr>
 													<?php
-													while($row_task_history_user = mysqli_fetch_assoc($result_task_history))
+													foreach($portal_requests as $row_task_history_user)
 													{
 														$task_order_id = $row_task_history_user['order_id'];
 														$task_case_type = $row_task_history_user['case_type'];

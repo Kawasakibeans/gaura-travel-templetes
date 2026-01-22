@@ -13,8 +13,6 @@ wp_enqueue_style('font-awesome', 'https://cdnjs.cloudflare.com/ajax/libs/font-aw
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
-global $wpdb;
-
 // Initialize all variables
 $from_date = isset($_GET['from_date']) ? sanitize_text_field($_GET['from_date']) : '';
 $to_date = isset($_GET['to_date']) ? sanitize_text_field($_GET['to_date']) : '';
@@ -24,148 +22,60 @@ $monthly_summary = [];
 $show_kpis = false;
 $current_filter = isset($_GET['filter']) ? sanitize_text_field($_GET['filter']) : '';
 $show_table = false;
+$api_error = '';
 
 // Only query data if dates are selected
 if (!empty($from_date) || !empty($to_date)) {
-    // Build the base query
-// Build the base query
-// Build the base query
-// Build the base query
-$query = "
-    SELECT 
-        r.case_id,
-        r.reservation_ref,
-        r.case_type,
-        r.status,
-        r.sub_status,
-        r.case_date,
-        r.last_response_on,
-        r.updated_by,
-        r.priority,
-        b.order_id,
-        b.order_type,
-        b.t_type,
-        b.travel_date,
-        b.return_date,
-        b.product_title,
-        b.total_pax,
-        b.source,
-        b.trip_code,
-        orig_b.total_amount,
-        cp.amount as cost_taken_amount
-    FROM 
-        wpk4_backend_user_portal_requests r
-    LEFT JOIN 
-        wpk4_backend_travel_bookings b ON r.reservation_ref = b.order_id
-    LEFT JOIN
-        wpk4_backend_travel_bookings orig_b ON r.reservation_ref = orig_b.previous_order_id
-    LEFT JOIN
-        wpk4_backend_travel_booking_custom_payments cp ON r.reservation_ref = cp.order_id 
-        AND cp.type_of_payment = 'Date Change' 
-        AND cp.status = 'paid'
-    WHERE 
-        r.case_type = 'datechange'
-";
-    // Add date range conditions if provided
-    if (!empty($from_date) && !empty($to_date)) {
-        $query .= $wpdb->prepare(" 
-            AND DATE(STR_TO_DATE(r.case_date, '%%Y-%%m-%%d %%H:%%i:%%s')) BETWEEN %s AND %s
-        ", $from_date, $to_date);
-    } elseif (!empty($from_date)) {
-        $query .= $wpdb->prepare(" 
-            AND DATE(STR_TO_DATE(r.case_date, '%%Y-%%m-%%d %%H:%%i:%%s')) >= %s
-        ", $from_date);
-    } elseif (!empty($to_date)) {
-        $query .= $wpdb->prepare(" 
-            AND DATE(STR_TO_DATE(r.case_date, '%%Y-%%m-%%d %%H:%%i:%%s')) <= %s
-        ", $to_date);
-    }
-    
-    $query .= " ORDER BY STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s') ASC";
-
-    $all_requests = $wpdb->get_results($query, ARRAY_A);
-    
-    // Get all reservation_refs for the secondary queries
-$transaction_map = [];
-if (!empty($all_requests)) {
-    // Get all unique reservation_refs
-    $reservation_refs = array_unique(array_column($all_requests, 'reservation_ref'));
-    
-    // Prepare placeholders for IN clause
-    $placeholders = implode(',', array_fill(0, count($reservation_refs), '%s'));
-    
-    // Query for transaction amounts
-    $transaction_query = $wpdb->prepare("
-        SELECT 
-            order_id,
-            SUM(transaction_amount) as transaction_sum
-        FROM 
-            wpk4_backend_travel_booking_ticket_number
-        WHERE 
-            order_id IN ($placeholders)
-            AND reason = 'Datechange'
-        GROUP BY order_id
-    ", $reservation_refs);
-    
-    $transaction_results = $wpdb->get_results($transaction_query, ARRAY_A);
-    
-    // Create a map of order_id => transaction_sum
-    foreach ($transaction_results as $row) {
-        $transaction_map[$row['order_id']] = $row['transaction_sum'];
-    }
-}
-
-    // Process the data to match the expected format
-foreach ($all_requests as $request) {
-    $reservation_ref = $request['reservation_ref'];
-    $transaction_sum = $transaction_map[$reservation_ref] ?? 0;
-        // Extract airline code from trip_code (HYD-MEL-TR575-TR024 -> take 9,10 letters)
-        $airline = '';
-        if (!empty($request['trip_code']) && strlen($request['trip_code']) >= 10) {
-            $airline = substr($request['trip_code'], 8, 2);
+    if (!defined('API_BASE_URL')) {
+        $api_error = 'API_BASE_URL is not defined in wp-config.php.';
+    } else {
+        $api_params = [];
+        if (!empty($from_date)) {
+            $api_params['from'] = $from_date;
         }
-        
-        // Format dates - handle case_date which is varchar with datetime format
-        $case_date = '';
-        if (!empty($request['case_date'])) {
-            try {
-                $case_date = DateTime::createFromFormat('Y-m-d H:i:s', $request['case_date']);
-                if ($case_date) {
-                    $case_date = $case_date->format('d/m/Y');
-                }
-            } catch (Exception $e) {
-                $case_date = '';
+        if (!empty($to_date)) {
+            $api_params['to'] = $to_date;
+        }
+
+        $request_url = rtrim(API_BASE_URL, '/') . '/date-change-request';
+        if (!empty($api_params)) {
+            $request_url .= '?' . http_build_query($api_params);
+        }
+
+        $curl = curl_init();
+        curl_setopt_array($curl, [
+            CURLOPT_URL => $request_url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_ENCODING => '',
+            CURLOPT_MAXREDIRS => 10,
+            CURLOPT_TIMEOUT => 0,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_CUSTOMREQUEST => 'GET',
+        ]);
+
+        $response = curl_exec($curl);
+        $curl_error = curl_error($curl);
+        curl_close($curl);
+
+        if ($curl_error) {
+            $api_error = 'Failed to fetch date change data from API: ' . $curl_error;
+        } else {
+            $responseData = json_decode($response, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $api_error = 'Invalid API response format.';
+            } elseif (($responseData['status'] ?? '') !== 'success') {
+                $api_error = $responseData['message'] ?? 'API returned an error.';
+            } else {
+                $apiData = $responseData['data'] ?? [];
+                $processed_requests = $apiData['requests'] ?? [];
+                $monthly_summary = $apiData['monthly_summary'] ?? [];
             }
         }
-        
-        $travel_date = !empty($request['travel_date']) ? date('d/m/Y', strtotime($request['travel_date'])) : '';
-        $last_response_on = !empty($request['last_response_on']) ? date('d/m/Y', strtotime($request['last_response_on'])) : '';
-        $cost_taken = ($request['status'] === 'success') ? ($request['cost_taken_amount'] ?? 0) : 0;
-        $total_revenue = ($request['status'] === 'success') ? ($cost_taken - $transaction_sum) : 0;
-        
-        $processed_requests[] = [
-            'query_date' => $case_date,
-            'agent' => $request['updated_by'] ?? '',
-            'case_id' => $request['case_id'] ?? '',
-            'pnr' => $request['reservation_ref'] ?? '',
-            'request_type' => 'datechange',
-            'pax_count' => $request['total_pax'] ?? '',
-            'airline' => $airline,
-            'last_quoted_by' => '',
-            'booking_type' => (isset($request['order_type']) && strtolower($request['order_type']) === 'gds') ? 'FIT' : 'GDeals',
-            'old_travel_date' => $travel_date,
-            'airline_change_fee' => '',
-            'fare_difference' => '',
-            'gaura_travel_service_fee' => '',
-            'buffer' => '',
-            'cost_given' => $request['total_amount'] ?? 0,
-            'expected_cost' => '',
-            'cost_taken' => ($request['status'] === 'success') ? ($request['cost_taken_amount'] ?? 0) : 0,
-            'total_revenue' => $total_revenue,
-            'status' => $request['status'] ?? '',
-            'status_date' => $last_response_on
-        ];
     }
+
+    $processed_requests = is_array($processed_requests) ? $processed_requests : [];
+    $monthly_summary = is_array($monthly_summary) ? $monthly_summary : [];
 
     // Initialize filtered_data with all processed requests
     $filtered_data = $processed_requests;
@@ -206,46 +116,6 @@ foreach ($all_requests as $request) {
                 });
                 break;
         }
-    }
-
-// Get monthly summary data only if we have a date range
-    if (!empty($from_date) || !empty($to_date)) {
-        $monthly_query = "
-            SELECT 
-                YEAR(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) as year,
-                MONTH(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) as month,
-                SUM(CASE WHEN LOWER(b.order_type) = 'gds' THEN 1 ELSE 0 END) as fit_count,
-                SUM(CASE WHEN LOWER(b.order_type) != 'gds' OR b.order_type IS NULL THEN 1 ELSE 0 END) as gdeals_count,
-                COUNT(*) as total_count
-            FROM 
-                wpk4_backend_user_portal_requests r
-            LEFT JOIN 
-                wpk4_backend_travel_bookings b ON r.reservation_ref = b.order_id
-            WHERE 
-                r.case_type = 'datechange'
-        ";
-    
-        // Add date range conditions to monthly query if provided
-        if (!empty($from_date)) {
-            $monthly_query .= $wpdb->prepare(" 
-                AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) >= %s
-            ", $from_date);
-        }
-        if (!empty($to_date)) {
-            $monthly_query .= $wpdb->prepare(" 
-                AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) <= %s
-            ", $to_date);
-        }
-    
-        $monthly_query .= "
-            GROUP BY 
-                YEAR(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')), 
-                MONTH(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s'))
-            ORDER BY 
-                year DESC, month DESC
-        ";
-    
-        $monthly_summary = $wpdb->get_results($monthly_query, ARRAY_A);
     }
 }
 
@@ -289,7 +159,14 @@ $month_names = [
     </form>
 </div>
 
-<?php if (empty($from_date) && empty($to_date)): ?>
+<?php if (!empty($api_error)): ?>
+    <div class="data-summary">
+        <div class="no-data-message" style="color: #d93025;">
+            <i class="fas fa-exclamation-triangle"></i>
+            <?php echo esc_html($api_error); ?>
+        </div>
+    </div>
+<?php elseif (empty($from_date) && empty($to_date)): ?>
     <div class="data-summary">
         <div class="no-data-message">
             <i class="fas fa-info-circle"></i>
@@ -1295,7 +1172,7 @@ $month_names = [
             const airlineFilter = document.getElementById('airline-filter').value.toLowerCase();
             const bookingTypeFilter = document.getElementById('booking-type-filter').value.toLowerCase();
             const searchValue = document.getElementById('search-requests').value.toLowerCase();
-        
+            
             // Get all table rows
             const rows = document.querySelectorAll('#paginated-table tbody tr');
             let hasVisibleRows = false;
@@ -1304,7 +1181,7 @@ $month_names = [
                 // Get cell values for filtering
                 const status = row.getAttribute('data-status');
                 const airline = row.cells[7].textContent.trim().toLowerCase(); // Airline column
-                const bookingType = row.cells[9].textContent.trim().toLowerCase(); // Booking type column
+                const bookingType = row.cells[8].textContent.trim().toLowerCase(); // Booking type column
                 const rowText = Array.from(row.cells).map(cell => cell.textContent).join(' ').toLowerCase();
         
                 // Determine if row should be visible

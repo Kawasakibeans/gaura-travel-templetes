@@ -1,11 +1,24 @@
 <?php
 session_start();
 
+// Load WordPress configuration to get API_BASE_URL
+require_once( dirname( __FILE__, 5 ) . '/wp-config.php' );
+
+// Define API base URL if not already defined (fallback)
+if (!defined('API_BASE_URL')) {
+    define('API_BASE_URL', 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1');
+}
+
+$base_url = API_BASE_URL; // Use global constant
+
+// ✅ FIX: Removed PDO database connection - now using API endpoints for all operations
+// OLD DATABASE CONNECTION - COMMENTED OUT (now using API endpoints)
+/*
 // Database connection
 $servername = "localhost";
-$username = "gaurat_sriharan";
-$password = "r)?2lc^Q0cAE";
-$dbname = "gaurat_gauratravel";
+$username = "gt1ybwhome";
+$password = "gDf3ghfxb6c";
+$dbname = "gt1ybwhome_gt1";
 
 try {
     $pdo = new PDO("mysql:host=$servername;dbname=$dbname;charset=utf8", $username, $password);
@@ -13,6 +26,7 @@ try {
 } catch(PDOException $e) {
     die("Connection failed: " . $e->getMessage());
 }
+*/
 
 function parseDate($excelDate) {
     if (empty($excelDate)) return null;
@@ -65,51 +79,221 @@ function extractNumeric($value) {
     return isset($matches[0]) ? floatval($matches[0]) : 0;
 }
 
-function updateDatabaseRecord($pdo, $data) {
-    $sqlUpdate = "UPDATE wpk4_backend_ticket_reconciliation SET 
-            transaction_amount = ?,
-            fare = ?,
-            vendor = ?, 
-            a_l = ?, 
-            tax = ?, 
-            fee = ?, 
-            comm = ?, 
-            remark = ?, 
-            tax_inr = ?, 
-            comm_inr = ?, 
-            transaction_amount_inr = ?,
-            fare_inr = ?,
-            added_on = NOW(),
-            added_by = 'system',
-            confirmed = 'Confirmed'
-        WHERE document = ? AND document_type = ? AND vendor = ?";
-    $stmtUpdate = $pdo->prepare($sqlUpdate);
-    $mainTableSuccess = $stmtUpdate->execute([
-        $data['Transaction'] ?? 0,
-        $data['Fare'] ?? 0,
-        $data['Vendor'],
-        $data['A_L'] ?? '',
-        $data['Tax'] ?? 0,
-        $data['Fee'] ?? 0,
-        $data['Comm'] ?? 0,
-        $data['Void/Refund/Emergency'] ?? '',
-         $data['Tax INR'] ?? 0,
-        $data['Comm INR'] ?? 0,
-        $data['Transaction INR'] ?? 0,
-        $data['Fare INR'] ?? 0,
-        $data['Document'],
-        $data['Document Type'] ?? '',
-        $data['Vendor']
-    ]);
-    if (!$mainTableSuccess) {
-        $errorInfo = $stmtUpdate->errorInfo();
-        error_log('SQL Update Error: ' . print_r($errorInfo, true));
-        return 'SQL Error: ' . $errorInfo[2];
+// Fetch existing documents from API endpoint
+// API Endpoint: POST /v1/ticket-reconciliation/existing
+// Source: TicketReconciliationDAL::getExistingDocuments
+// Body parameters: documents (required, array of document numbers)
+// Response payload: { "existing": [...] } or { "status": "success", "data": { "existing": [...] } }
+function getExistingDocumentsFromReconciliationAPI($documentNumbers) {
+    global $base_url;
+    
+    if (empty($documentNumbers)) {
+        return [];
     }
-    if ($stmtUpdate->rowCount() == 0) {
-        return 'No record updated for Document: ' . ($data['Document'] ?? '');
+    
+    try {
+        $apiUrl = $base_url . '/ticket-reconciliation/existing';
+        
+        // Prepare the request data
+        $postData = json_encode(['documents' => $documentNumbers]);
+        
+        // Initialize cURL
+        $ch = curl_init($apiUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'Content-Length: ' . strlen($postData)
+        ]);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+        
+        // Execute the request
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        // Handle cURL errors
+        if ($response === false || !empty($curlError)) {
+            error_log("Ticket Reconciliation Existing API cURL Error: " . $curlError);
+            return [];
+        }
+        
+        // Handle HTTP errors
+        if ($httpCode !== 200) {
+            error_log("Ticket Reconciliation Existing API HTTP Error: Status code " . $httpCode);
+            return [];
+        }
+        
+        // Parse the JSON response
+        $data = json_decode($response, true);
+        
+        // Handle JSON decode errors
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("Ticket Reconciliation Existing API JSON Error: " . json_last_error_msg());
+            return [];
+        }
+        
+        // OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+        /*
+        // Query: Get Existing Documents from Reconciliation
+        // SELECT document FROM wpk4_backend_ticket_reconciliation WHERE document IN ($placeholders)
+        // Source: TicketReconciliationDAL::getExistingDocuments
+        // Method: POST
+        // Endpoint: /v1/ticket-reconciliation/existing
+        // Body parameters: documents (required, array of document numbers)
+        */
+        
+        // Extract existing documents from response
+        // Handle different response formats
+        if (isset($data['status']) && $data['status'] === 'success' && isset($data['data']['existing'])) {
+            return is_array($data['data']['existing']) ? $data['data']['existing'] : [];
+        } elseif (isset($data['existing']) && is_array($data['existing'])) {
+            return $data['existing'];
+        } elseif (isset($data['documents']) && is_array($data['documents'])) {
+            return $data['documents'];
+        } elseif (isset($data['data']) && is_array($data['data'])) {
+            return $data['data'];
+        } elseif (is_array($data)) {
+            // If API returns array directly
+            return $data;
+        } else {
+            error_log("Ticket Reconciliation Existing API Response Error: Unexpected response format");
+            return [];
+        }
+        
+    } catch (Exception $e) {
+        error_log("Ticket Reconciliation Existing API Exception: " . $e->getMessage());
+        return [];
     }
-    return true;
+}
+
+// ✅ FIX: Helper function to call API endpoints
+if (!function_exists('callApiEndpoint')) {
+    function callApiEndpoint($endpoint, $method = 'GET', $data = null) {
+        global $base_url;
+        
+        // Ensure endpoint starts with /
+        if (strpos($endpoint, '/') !== 0) {
+            $endpoint = '/' . $endpoint;
+        }
+        
+        $url = $base_url . $endpoint;
+        
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+            CURLOPT_HTTPHEADER => ['Accept: application/json'],
+        ]);
+        
+        if ($method === 'POST' || $method === 'PUT') {
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+            if ($data !== null) {
+                $jsonData = json_encode($data);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonData);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                    'Content-Type: application/json',
+                    'Accept: application/json',
+                    'Content-Length: ' . strlen($jsonData)
+                ]);
+            }
+        }
+        
+        $response = curl_exec($ch);
+        $curlError = curl_error($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API call error for $endpoint: " . $curlError);
+            return ['success' => false, 'error' => $curlError];
+        }
+        
+        if ($httpCode !== 200 && $httpCode !== 201) {
+            error_log("API call failed for $endpoint: HTTP $httpCode | Response: " . substr($response, 0, 500));
+            return ['success' => false, 'error' => "HTTP $httpCode", 'response' => $response];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("JSON decode error for $endpoint: " . json_last_error_msg());
+            return ['success' => false, 'error' => 'JSON decode error'];
+        }
+        
+        return $data;
+    }
+}
+
+// ✅ FIX: Replace SQL queries with API endpoint calls
+// OLD SQL QUERY - COMMENTED OUT (now using API endpoints)
+/*
+// OLD SQL UPDATE:
+// UPDATE wpk4_backend_ticket_reconciliation SET 
+//     transaction_amount = ?, fare = ?, vendor = ?, a_l = ?, 
+//     tax = ?, fee = ?, comm = ?, remark = ?, 
+//     tax_inr = ?, comm_inr = ?, transaction_amount_inr = ?, fare_inr = ?,
+//     added_on = NOW(), added_by = 'system', confirmed = 'Confirmed'
+// WHERE document = ? AND document_type = ? AND vendor = ?
+*/
+
+function updateDatabaseRecord($data) {
+    // Prepare payload for API - match the expected structure from TicketReconciliationUploadService
+    $rowPayload = [
+        'document' => trim($data['Document'] ?? ''),
+        'document_type' => trim($data['Document Type'] ?? ''),
+        'transaction_amount' => extractNumeric($data['Transaction'] ?? 0),
+        'fare' => extractNumeric($data['Fare'] ?? 0),
+        'vendor' => trim($data['Vendor'] ?? ''),
+        'a_l' => trim($data['A_L'] ?? ''),
+        'tax' => extractNumeric($data['Tax'] ?? 0),
+        'fee' => extractNumeric($data['Fee'] ?? 0),
+        'comm' => extractNumeric($data['Comm'] ?? 0),
+        'remark' => trim($data['Void/Refund/Emergency'] ?? ''),
+        'tax_inr' => extractNumeric($data['Tax INR'] ?? 0),
+        'comm_inr' => extractNumeric($data['Comm INR'] ?? 0),
+        'transaction_amount_inr' => extractNumeric($data['Transaction INR'] ?? 0),
+        'fare_inr' => extractNumeric($data['Fare INR'] ?? 0),
+        'added_by' => 'account-statement-amount-update',
+    ];
+    
+    // Use ticket-reconciliation upload/update endpoint
+    $apiPayload = [
+        'dataset' => 'past_data',
+        'rows' => [$rowPayload]
+    ];
+    
+    $result = callApiEndpoint('/account/ticket-reconciliation/upload/update', 'POST', $apiPayload);
+    
+    // Check result structure
+    if (isset($result['status']) && $result['status'] === 'success') {
+        $updated = $result['data']['updated'] ?? 0;
+        if ($updated > 0) {
+            return true;
+        } else {
+            return 'No record updated for Document: ' . ($data['Document'] ?? '');
+        }
+    } elseif (isset($result['updated']) && $result['updated'] > 0) {
+        return true;
+    } else {
+        // Log error details
+        $errorMsg = $result['error'] ?? 'Unknown error';
+        $errorDetails = $result['errors'] ?? [];
+        error_log("API update failed for document: {$data['Document']} - Error: $errorMsg");
+        if (!empty($errorDetails)) {
+            error_log("Error details: " . json_encode($errorDetails));
+        }
+        return 'API Error: ' . $errorMsg;
+    }
 }
 
 
@@ -228,13 +412,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['csv_file'])) {
         }
         fclose($handle);
 
-        // Batch query for existing documents
+        // Batch query for existing documents via API
         $existingDocs = [];
         if (!empty($documentNumbers)) {
-            $placeholders = implode(',', array_fill(0, count($documentNumbers), '?'));
-            $stmt = $pdo->prepare("SELECT document FROM wpk4_backend_ticket_reconciliation WHERE document IN ($placeholders)");
-            $stmt->execute($documentNumbers);
-            $existingDocs = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+            $existingDocs = getExistingDocumentsFromReconciliationAPI($documentNumbers);
         }
 
         // Process data rows
@@ -339,8 +520,13 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_records') {
     
     foreach ($_POST['data'] as $item) {
         try {
-            if (updateDatabaseRecord($pdo, $item)) {
+            // ✅ FIX: Removed $pdo parameter - now using API endpoints
+            $result = updateDatabaseRecord($item);
+            if ($result === true) {
                 $updated++;
+            } else {
+                // If result is not true, it's an error message
+                $errors[] = is_string($result) ? $result : "Error updating document {$item['Document']}: Unknown error";
             }
         } catch (Exception $e) {
             $errors[] = "Error updating document {$item['Document']}: " . $e->getMessage();

@@ -7,20 +7,331 @@
  * @subpackage Twenty_Twenty
  * @since Twenty Twenty 1.0
  */
-get_header();?>
-<div class='wpb_column vc_column_container vc_col-sm-12' id='manage_bookings' style='width:95%;margin:auto;padding:100px 0px;'>
-<?php
+
+require_once($_SERVER['DOCUMENT_ROOT'].'/wp-load.php');
+
 error_reporting(E_ALL);
-include("wp-config-custom.php");
 date_default_timezone_set("Australia/Melbourne");
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public/v1';
+
+global $wpdb, $current_user;
+
+wp_get_current_user();
+$currnt_userlogn = $current_user->user_login ?? 'system';
 $current_time = date('Y-m-d H:i:s');
 
-global $current_user;
-$currnt_userlogn = $current_user->user_login;
-$query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='$ip_address'";
-$result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
-$row_ip_selection = mysqli_fetch_assoc($result_ip_selection);
-$is_ip_matched = mysqli_num_rows($result_ip_selection);
+// Azupay API Configuration
+$authorization_code = 'SECR7566D1_c4cc3709d612d1e0e677833ffbcef703_9Kz3JvUrYqPECSwl'; // live
+$access_url = 'https://api.azupay.com.au/v1'; // live
+$client_id = "c4cc3709d612d1e0e677833ffbcef703"; // live
+
+// Check if this is an API request
+$is_api_request = false;
+$request_uri = $_SERVER['REQUEST_URI'] ?? '';
+$path = parse_url($request_uri, PHP_URL_PATH);
+$path_parts = array_filter(explode('/', trim($path, '/')));
+$path_parts = array_values($path_parts);
+
+// Check if path contains API indicators
+for ($i = 0; $i < count($path_parts); $i++) {
+    if ($path_parts[$i] === 'azupay') {
+        $is_api_request = true;
+        break;
+    }
+}
+
+// If API request, handle it and exit
+if ($is_api_request) {
+    header('Content-Type: application/json');
+    
+    // Helper functions
+    function sendResponse($status, $data = null, $message = null, $code = 200) {
+        http_response_code($code);
+        echo json_encode([
+            'status' => $status,
+            'data' => $data,
+            'message' => $message
+        ]);
+        exit;
+    }
+    
+    function sendError($message, $code = 500) {
+        sendResponse('error', null, $message, $code);
+    }
+    
+    // Format date for Azupay API (YYYY-MM-DD to YYYY-MM-DDTHH:mm:ss.000Z)
+    function formatDateForAzupay($date_str, $is_end = false) {
+        if (empty($date_str)) {
+            return null;
+        }
+        
+        $date = new DateTime($date_str . ($is_end ? ' 23:59:59' : ' 00:00:00') . '+10:00');
+        $formatted = $date->format("Y-m-d\TH:i:s.u\Z");
+        return preg_replace('/\.?0+Z/', ($is_end ? '.999Z' : '.000Z'), $formatted);
+    }
+    
+    // WordPress HTTP API wrapper to replace Guzzle
+    function azupayHttpRequest($method, $url, $options = []) {
+        $args = [
+            'method' => $method,
+            'timeout' => 30,
+            'headers' => $options['headers'] ?? [],
+        ];
+        
+        if (isset($options['body'])) {
+            $args['body'] = $options['body'];
+        }
+        
+        $response = wp_remote_request($url, $args);
+        
+        if (is_wp_error($response)) {
+            throw new Exception('HTTP request failed: ' . $response->get_error_message(), 500);
+        }
+        
+        $status_code = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+        
+        // Create a simple response object that mimics Guzzle's interface
+        return new class($body, $status_code) {
+            private $body;
+            private $status_code;
+            
+            public function __construct($body, $status_code) {
+                $this->body = $body;
+                $this->status_code = $status_code;
+            }
+            
+            public function getBody() {
+                return $this->body;
+            }
+            
+            public function getStatusCode() {
+                return $this->status_code;
+            }
+        };
+    }
+    
+    $method = $_SERVER['REQUEST_METHOD'];
+    
+    // Extract resource and ID from path
+    $resource = null;
+    $resource_id = null;
+    $sub_resource = null;
+    
+    for ($i = 0; $i < count($path_parts); $i++) {
+        if ($path_parts[$i] === 'azupay') {
+            if (isset($path_parts[$i + 1])) {
+                $resource = $path_parts[$i + 1];
+                
+                // Check for sub-resources like 'payment-requests'
+                if ($resource === 'payment-requests' && isset($path_parts[$i + 2])) {
+                    $sub_resource = $path_parts[$i + 2];
+                    if (isset($path_parts[$i + 3]) && is_numeric($path_parts[$i + 3])) {
+                        $resource_id = $path_parts[$i + 3];
+                    }
+                } elseif (isset($path_parts[$i + 2]) && !is_numeric($path_parts[$i + 2])) {
+                    $resource_id = $path_parts[$i + 2];
+                }
+            }
+            break;
+        }
+    }
+    
+    try {
+        // GET /v1/azupay/payment-requests/search - Search payment requests
+        if ($method === 'GET' && $resource === 'payment-requests' && $sub_resource === 'search') {
+            $search_body_condition = '';
+            
+            // Client transaction ID
+            if (!empty($_GET['client_transaction_id'])) {
+                $search_body_condition = '"clientTransactionId":"' . trim($_GET['client_transaction_id']) . '"';
+            }
+            // Pay ID
+            elseif (!empty($_GET['pay_id'])) {
+                $search_body_condition = '"payID":"' . trim($_GET['pay_id']) . '"';
+            }
+            // Date range
+            elseif (!empty($_GET['from_date']) || !empty($_GET['to_date'])) {
+                $from_date = !empty($_GET['from_date']) ? trim($_GET['from_date']) : date('Y-m-d');
+                $to_date = !empty($_GET['to_date']) ? trim($_GET['to_date']) : date('Y-m-d');
+                
+                $formatted_start = formatDateForAzupay($from_date, false);
+                $formatted_end = formatDateForAzupay($to_date, true);
+                
+                $search_body_condition = '"fromDate":"' . $formatted_start . '","toDate":"' . $formatted_end . '"';
+            }
+            // Default to today's date range
+            else {
+                $formatted_start = formatDateForAzupay(date('Y-m-d'), false);
+                $formatted_end = formatDateForAzupay(date('Y-m-d'), true);
+                
+                $search_body_condition = '"fromDate":"' . $formatted_start . '","toDate":"' . $formatted_end . '"';
+            }
+            
+            // Azupay API Call:
+            // POST https://api.azupay.com.au/v1/paymentRequest/search
+            // Authorization: SECR7566D1_c4cc3709d612d1e0e677833ffbcef703_9Kz3JvUrYqPECSwl
+            // Content-Type: application/json
+            // Body: {"PaymentRequestSearch":{...}}
+            
+            $response = azupayHttpRequest('POST', $access_url . '/paymentRequest/search', [
+                'body' => '{"PaymentRequestSearch":{' . $search_body_condition . '}}',
+                'headers' => [
+                    'Authorization' => $authorization_code,
+                    'accept' => 'application/json',
+                    'content-type' => 'application/json',
+                ],
+            ]);
+            
+            $data = json_decode($response->getBody(), true);
+            
+            // For COMPLETE payments, insert status checkup record
+            if (isset($data['records']) && is_array($data['records'])) {
+                foreach ($data['records'] as $record) {
+                    if (isset($record['PaymentRequestStatus']['status']) && 
+                        $record['PaymentRequestStatus']['status'] === "COMPLETE") {
+                        $clientTransactionId_loop = $record['PaymentRequest']['clientTransactionId'] ?? '';
+                        
+                        if (!empty($clientTransactionId_loop)) {
+                            // Original Query:
+                            // INSERT INTO wpk4_backend_travel_booking_update_history 
+                            // (order_id, meta_key, meta_value, updated_time, updated_user) 
+                            // VALUES (:order_id, 'azupay_status', 'COMPLETE', :updated_time, 'azu_callback')
+                            
+                            $wpdb->insert(
+                                $wpdb->prefix . 'backend_travel_booking_update_history',
+                                [
+                                    'order_id' => $clientTransactionId_loop,
+                                    'meta_key' => 'azupay_status',
+                                    'meta_value' => 'COMPLETE',
+                                    'updated_time' => $current_time,
+                                    'updated_user' => 'azu_callback'
+                                ],
+                                ['%s', '%s', '%s', '%s', '%s']
+                            );
+                        }
+                    }
+                }
+            }
+            
+            sendResponse('success', $data, 'Payment requests retrieved successfully');
+        }
+        
+        // POST /v1/azupay/payment-requests - Create payment request
+        if ($method === 'POST' && $resource === 'payment-requests' && $sub_resource === null) {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+            
+            // Validate required fields
+            $required = ['pay_id', 'pay_id_suffix', 'client_id', 'client_transaction_id', 'payment_amount', 'payment_description'];
+            $data = [];
+            foreach ($required as $field) {
+                if (empty($input[$field])) {
+                    sendError("Field '{$field}' is required", 400);
+                }
+                $data[$field] = trim($input[$field]);
+            }
+            
+            // Validate payment amount
+            $payment_amount = floatval($data['payment_amount']);
+            if ($payment_amount <= 0) {
+                sendError('payment_amount must be positive', 400);
+            }
+            
+            // Azupay API Call:
+            // POST https://api.azupay.com.au/v1/paymentRequest
+            // Authorization: SECR7566D1_c4cc3709d612d1e0e677833ffbcef703_9Kz3JvUrYqPECSwl
+            // Content-Type: application/json
+            // Body: {"PaymentRequest":{"payID":"...","payIDSuffix":"...","clientId":"...","clientTransactionId":"...","paymentAmount":...,"paymentDescription":"..."}}
+            
+            $response = azupayHttpRequest('POST', $access_url . '/paymentRequest', [
+                'body' => json_encode([
+                    'PaymentRequest' => [
+                        'payID' => $data['pay_id'],
+                        'payIDSuffix' => $data['pay_id_suffix'],
+                        'clientId' => $data['client_id'],
+                        'clientTransactionId' => $data['client_transaction_id'],
+                        'paymentAmount' => $payment_amount,
+                        'paymentDescription' => $data['payment_description']
+                    ]
+                ]),
+                'headers' => [
+                    'Authorization' => $authorization_code,
+                    'accept' => 'application/json',
+                    'content-type' => 'application/json',
+                ],
+            ]);
+            
+            $response_data = json_decode($response->getBody(), true);
+            
+            sendResponse('success', $response_data, 'Payment request created successfully', 201);
+        }
+        
+        // GET /v1/azupay/payment-requests/{id} - Get payment request status
+        if ($method === 'GET' && $resource === 'payment-requests' && $resource_id !== null && $sub_resource === null) {
+            // Azupay API Call:
+            // GET https://api.azupay.com.au/v1/paymentRequest?id=:id
+            // Authorization: SECR7566D1_c4cc3709d612d1e0e677833ffbcef703_9Kz3JvUrYqPECSwl
+            // Accept: application/json
+            
+            $response = azupayHttpRequest('GET', $access_url . '/paymentRequest?id=' . urlencode($resource_id), [
+                'headers' => [
+                    'Authorization' => $authorization_code,
+                    'accept' => 'application/json',
+                ],
+            ]);
+            
+            $data = json_decode($response->getBody(), true);
+            
+            sendResponse('success', $data, 'Payment request status retrieved successfully');
+        }
+        
+        // GET /v1/azupay/balance - Check balance
+        if ($method === 'GET' && $resource === 'balance') {
+            // Azupay API Call:
+            // GET https://api.azupay.com.au/v1/balance
+            // Authorization: SECR7566D1_c4cc3709d612d1e0e677833ffbcef703_9Kz3JvUrYqPECSwl
+            // Accept: application/json
+            
+            $response = azupayHttpRequest('GET', $access_url . '/balance', [
+                'headers' => [
+                    'Authorization' => $authorization_code,
+                    'accept' => 'application/json',
+                ],
+            ]);
+            
+            $data = json_decode($response->getBody(), true);
+            
+            sendResponse('success', $data, 'Balance retrieved successfully');
+        }
+        
+        // Route not found
+        sendError('Endpoint not found', 404);
+        
+    } catch (Exception $e) {
+        $code = $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500;
+        sendError('Azupay API error: ' . $e->getMessage(), $code);
+    }
+}
+
+// Continue with original template code for HTML output
+get_header();
+?>
+<div class='wpb_column vc_column_container vc_col-sm-12' id='manage_bookings' style='width:95%;margin:auto;padding:100px 0px;'>
+<?php
+include("wp-config-custom.php");
+
+// Original Query:
+// SELECT * FROM wpk4_backend_ip_address_checkup WHERE ip_address = :ip_address
+$query_ip_selection = $wpdb->prepare(
+    "SELECT * FROM {$wpdb->prefix}backend_ip_address_checkup WHERE ip_address = %s",
+    $ip_address
+);
+$result_ip_selection = $wpdb->get_results($query_ip_selection, ARRAY_A);
+$row_ip_selection = !empty($result_ip_selection) ? $result_ip_selection[0] : null;
+$is_ip_matched = count($result_ip_selection);
 if($row_ip_selection['ip_address'] == $ip_address)
 {
     ?>
@@ -59,16 +370,46 @@ if($row_ip_selection['ip_address'] == $ip_address)
         }
     </style>
     <?php
-    $client = new \GuzzleHttp\Client();
-
-    //$authorization_code = 'SECRB12ADA_3137b12750b376c3b9809e254c35b512_V8hcgQ9RTlK265WL'; // uat
-	$authorization_code = 'SECR7566D1_c4cc3709d612d1e0e677833ffbcef703_9Kz3JvUrYqPECSwl'; // live
-
-	//$access_url = 'https://api-uat.azupay.com.au/v1'; // uat
-	$access_url = 'https://api.azupay.com.au/v1'; // live
-		
-    //$client_id = "3137b12750b376c3b9809e254c35b512"; // uat
-    $client_id = "c4cc3709d612d1e0e677833ffbcef703"; // live
+    // WordPress HTTP API wrapper function for HTML section
+    function azupayHttpRequestHtml($method, $url, $options = []) {
+        $args = [
+            'method' => $method,
+            'timeout' => 30,
+            'headers' => $options['headers'] ?? [],
+        ];
+        
+        if (isset($options['body'])) {
+            $args['body'] = $options['body'];
+        }
+        
+        $response = wp_remote_request($url, $args);
+        
+        if (is_wp_error($response)) {
+            throw new Exception('HTTP request failed: ' . $response->get_error_message(), 500);
+        }
+        
+        $status_code = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+        
+        // Create a simple response object that mimics Guzzle's interface
+        return new class($body, $status_code) {
+            private $body;
+            private $status_code;
+            
+            public function __construct($body, $status_code) {
+                $this->body = $body;
+                $this->status_code = $status_code;
+            }
+            
+            public function getBody() {
+                return $this->body;
+            }
+            
+            public function getStatusCode() {
+                return $this->status_code;
+            }
+        };
+    }
         
     if(current_user_can( 'administrator' ) || current_user_can( 'ho_operations' ))
     {
@@ -183,7 +524,7 @@ if($row_ip_selection['ip_address'] == $ip_address)
             
             }
             
-            $response = $client->request('POST', $access_url.'/paymentRequest/search', [
+            $response = azupayHttpRequestHtml('POST', $access_url.'/paymentRequest/search', [
               'body' => '{"PaymentRequestSearch":{'.$search_body_condition.'}}',
               'headers' => [
                 'Authorization' => $authorization_code,
@@ -215,8 +556,23 @@ if($row_ip_selection['ip_address'] == $ip_address)
                     if($record['PaymentRequestStatus']['status'] === "COMPLETE") {
                             
                             $clientTransactionId_loop = $record['PaymentRequest']['clientTransactionId'];
-                            mysqli_query($mysqli, "insert into wpk4_backend_travel_booking_update_history (order_id,meta_key,meta_value,updated_time,updated_user) 
-                            values ('$clientTransactionId_loop','azupay_status','COMPLETE','$current_time','azu_callback')") or die(mysqli_error($mysqli));
+                            
+                            // Original Query:
+                            // INSERT INTO wpk4_backend_travel_booking_update_history 
+                            // (order_id, meta_key, meta_value, updated_time, updated_user) 
+                            // VALUES (:order_id, 'azupay_status', 'COMPLETE', :updated_time, 'azu_callback')
+                            
+                            $wpdb->insert(
+                                $wpdb->prefix . 'backend_travel_booking_update_history',
+                                [
+                                    'order_id' => $clientTransactionId_loop,
+                                    'meta_key' => 'azupay_status',
+                                    'meta_value' => 'COMPLETE',
+                                    'updated_time' => $current_time,
+                                    'updated_user' => 'azu_callback'
+                                ],
+                                ['%s', '%s', '%s', '%s', '%s']
+                            );
                     }
                     
                     echo '<tr>';
@@ -280,7 +636,7 @@ if($row_ip_selection['ip_address'] == $ip_address)
         			$paymentAmount = $_POST['paymentAmount'];
         			$paymentDescription = $_POST['paymentDescription'];
                     
-                    $response = $client->request('POST', $access_url.'/paymentRequest', [
+                    $response = azupayHttpRequestHtml('POST', $access_url.'/paymentRequest', [
                       'body' => '{"PaymentRequest":{"payID":"'.$payID.'","payIDSuffix":"'.$payIDSuffix.'","clientId":"'.$clientId.'","clientTransactionId":"'.$clientTransactionId.'","paymentAmount":'.$paymentAmount.',"paymentDescription":"'.$paymentDescription.'"}}',
                       'headers' => [
                         'Authorization' => $authorization_code,
@@ -326,7 +682,7 @@ if($row_ip_selection['ip_address'] == $ip_address)
             if($_GET['pg'] == 'check-status')
             {
                 $paymentid = $_GET['id'];
-                $response = $client->request('GET', $access_url.'/paymentRequest?id='.$paymentid, [
+                $response = azupayHttpRequestHtml('GET', $access_url.'/paymentRequest?id='.$paymentid, [
                   'headers' => [
                     'Authorization' => $authorization_code,
                     'accept' => 'application/json',
@@ -363,7 +719,7 @@ if($row_ip_selection['ip_address'] == $ip_address)
             }
             if($_GET['pg'] == 'check-balance')
             {
-                $response = $client->request('GET', $access_url.'/balance', [
+                $response = azupayHttpRequestHtml('GET', $access_url.'/balance', [
                   'headers' => [
                     'Authorization' => $authorization_code,
                     'accept' => 'application/json',
@@ -387,4 +743,50 @@ else
 }
 ?>    
 </div>
-<?php get_footer(); ?>
+<?php 
+/**
+ * ============================================
+ * POSTMAN TEST EXAMPLES
+ * ============================================
+ * 
+ * 1. Search Payment Requests
+ *    Method: GET
+ *    URL: {{base_url}}/v1/azupay/payment-requests/search?from_date=2025-01-15&to_date=2025-01-16
+ *    Query Parameters (all optional):
+ *      - client_transaction_id: ORD123456
+ *      - from_date: 2025-01-15 (YYYY-MM-DD)
+ *      - to_date: 2025-01-16 (YYYY-MM-DD)
+ *      - pay_id: payments@gauratravel.com.au
+ *    Note: If no parameters provided, defaults to today's date range
+ * 
+ * 2. Create Payment Request
+ *    Method: POST
+ *    URL: {{base_url}}/v1/azupay/payment-requests
+ *    Body (JSON):
+ *      {
+ *        "pay_id": "payments@gauratravel.com.au",
+ *        "pay_id_suffix": "gauratravel.com.au",
+ *        "client_id": "c4cc3709d612d1e0e677833ffbcef703",
+ *        "client_transaction_id": "ORD123456",
+ *        "payment_amount": 150.00,
+ *        "payment_description": "Booking payment for order 123456"
+ *      }
+ * 
+ * 3. Get Payment Request Status
+ *    Method: GET
+ *    URL: {{base_url}}/v1/azupay/payment-requests/PAY123456
+ *    Path Parameter:
+ *      - id: PAY123456 (payment request ID)
+ * 
+ * 4. Check Balance
+ *    Method: GET
+ *    URL: {{base_url}}/v1/azupay/balance
+ * 
+ * Response Format:
+ * {
+ *   "status": "success",
+ *   "data": { ... },
+ *   "message": "..."
+ * }
+ */
+get_footer(); ?>

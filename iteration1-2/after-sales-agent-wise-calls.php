@@ -3,14 +3,14 @@
  * Template Name: After Sales Call Metrics agent wise
  */
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
 
 require_once(dirname(__FILE__, 5) . '/wp-config.php');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    echo "Database connection failed";
-    exit;
+// Clean output buffers to prevent conflicts
+while (ob_get_level()) {
+    ob_end_clean();
 }
 
 // Date filter and agent filter from GET params
@@ -18,82 +18,196 @@ $startDate = $_GET['start_date'] ?? date('Y-m-01');
 $endDate   = $_GET['end_date']   ?? date('Y-m-t');
 $selected_agent = $_GET['agent_name'] ?? '';
 
-// Fetch distinct agents for dropdown (excluding 'ABDN')
-$agentResult = $mysqli->query("
-    SELECT DISTINCT agent_name
-    FROM wpk4_backend_agent_codes
-    WHERE location = 'BOM' AND status = 'active'
-    ORDER BY agent_name ASC
-");
-$agents = [];
-if ($agentResult) {
-    while ($row = $agentResult->fetch_assoc()) {
-        $agents[] = $row['agent_name'];
+// Helper function to fetch agent names from API
+function fetchAgentNamesFromAPI($location = 'BOM', $status = 'active') {
+    $apiBaseUrl = 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public';
+    $apiEndpoint = '/v1/agent-codes-agent-names';
+    
+    // Build query parameters
+    $params = [
+        'location' => $location,
+        'status' => $status
+    ];
+    
+    $apiUrl = rtrim($apiBaseUrl, '/') . $apiEndpoint . '?' . http_build_query($params);
+    
+    try {
+        $ch = curl_init($apiUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("Agent Names API Error: " . $curlError);
+            return [];
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("Agent Names API HTTP Error: Status code " . $httpCode);
+            return [];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("Agent Names API JSON Error: " . json_last_error_msg());
+            return [];
+        }
+        
+        // Extract agent names from response
+        $agentNames = [];
+        if (isset($data['agents']) && is_array($data['agents'])) {
+            foreach ($data['agents'] as $agent) {
+                if (is_string($agent)) {
+                    $agentNames[] = $agent;
+                } elseif (is_array($agent) && isset($agent['agent_name'])) {
+                    $agentNames[] = $agent['agent_name'];
+                }
+            }
+        } elseif (isset($data['data']) && is_array($data['data'])) {
+            foreach ($data['data'] as $agent) {
+                if (is_string($agent)) {
+                    $agentNames[] = $agent;
+                } elseif (is_array($agent) && isset($agent['agent_name'])) {
+                    $agentNames[] = $agent['agent_name'];
+                }
+            }
+        } elseif (is_array($data)) {
+            foreach ($data as $agent) {
+                if (is_string($agent)) {
+                    $agentNames[] = $agent;
+                } elseif (is_array($agent) && isset($agent['agent_name'])) {
+                    $agentNames[] = $agent['agent_name'];
+                }
+            }
+        }
+        
+        // Sort agent names
+        sort($agentNames);
+        
+        return array_values($agentNames);
+    } catch (Exception $e) {
+        error_log("Agent Names API Exception: " . $e->getMessage());
+        return [];
     }
 }
 
-/**
- * Fetch data grouped by AGENT for the date range, optional day range & agent filter.
- * ACW is stored as text like '206 seconds' → parse the numeric seconds via SUBSTRING_INDEX/CAST.
- */
-function fetchDataByAgent($mysqli, $startDate, $endDate, $startDay = null, $endDay = null, $agent = '') {
-    $dateCondition = "`date` BETWEEN '$startDate' AND '$endDate'";
-    if ($startDay && $endDay) {
-        $dateCondition .= " AND DAY(`date`) BETWEEN $startDay AND $endDay";
+// Fetch distinct agents for dropdown from API
+$agents = fetchAgentNamesFromAPI('BOM', 'active');
+
+// Helper function to fetch productivity agent metrics from API
+function fetchProductivityAgentMetricsFromAPI($start_date, $end_date, $start_day = null, $end_day = null, $agent = '') {
+    $apiBaseUrl = 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public';
+    $apiEndpoint = '/v1/after-sale-productivity-agent-metrics';
+    
+    // Build query parameters
+    $params = [
+        'start_date' => $start_date,
+        'end_date' => $end_date
+    ];
+    
+    if ($start_day !== null && $end_day !== null) {
+        $params['start_day'] = (int)$start_day;
+        $params['end_day'] = (int)$end_day;
     }
+    
     if ($agent !== '') {
-        $agentEscaped = $mysqli->real_escape_string($agent);
-        $dateCondition .= " AND agent_name = '$agentEscaped'";
+        $params['agent_name'] = $agent;
     }
-
-    $query = "
-        SELECT 
-            agent_name,
-            SUM(inb_call_count)                                  AS inb_call_count,
-            SUM(inb_call_count_duration)                         AS inb_call_count_duration,
-            SUM(gtcs)                                            AS gtcs,
-            SUM(gtpy)                                            AS gtpy,
-            SUM(gtet)                                            AS gtet,
-            SUM(gtdc)                                            AS gtdc,
-            SUM(gtrf)                                            AS gtrf,
-            /* Parse 'NNN seconds' to numeric seconds and sum */
-            SUM(CAST(SUBSTRING_INDEX(total_acw, ' ', 1) AS UNSIGNED)) AS total_acw_seconds
-        FROM wpk4_agent_after_sale_productivity_report
-        WHERE $dateCondition
-        GROUP BY agent_name
-        HAVING SUM(inb_call_count) > 0
-        ORDER BY agent_name ASC
-    ";
-
-    $result = $mysqli->query($query);
-    $data = [];
-    if ($result) {
-        while ($row = $result->fetch_assoc()) {
-            $inb_calls = (int)$row['inb_call_count'];
-            $sum_dur   = (int)$row['inb_call_count_duration']; // seconds
-            $sum_acw   = (int)$row['total_acw_seconds'];       // seconds
+    
+    $apiUrl = rtrim($apiBaseUrl, '/') . $apiEndpoint . '?' . http_build_query($params);
+    
+    try {
+        $ch = curl_init($apiUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("Productivity Agent Metrics API Error: " . $curlError);
+            return [];
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("Productivity Agent Metrics API HTTP Error: Status code " . $httpCode);
+            return [];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("Productivity Agent Metrics API JSON Error: " . json_last_error_msg());
+            return [];
+        }
+        
+        // Handle different response formats
+        $results = [];
+        if (isset($data['data']) && is_array($data['data'])) {
+            $results = $data['data'];
+        } elseif (isset($data['results']) && is_array($data['results'])) {
+            $results = $data['results'];
+        } elseif (isset($data['metrics']) && is_array($data['metrics'])) {
+            $results = $data['metrics'];
+        } elseif (is_array($data)) {
+            $results = $data;
+        }
+        
+        // Process and format the data to match expected structure
+        $formattedData = [];
+        foreach ($results as $row) {
+            $inb_calls = isset($row['inb_call_count']) ? (int)$row['inb_call_count'] : 0;
+            $sum_dur   = isset($row['inb_call_count_duration']) ? (int)$row['inb_call_count_duration'] : 0; // seconds
+            $sum_acw   = isset($row['total_acw_seconds']) ? (int)$row['total_acw_seconds'] : 0; // seconds
 
             $aht = ($inb_calls > 0) ? round($sum_dur / $inb_calls) : 0; // seconds per call
             $acw = ($inb_calls > 0) ? round($sum_acw / $inb_calls) : 0; // seconds per call
-            $total_campaign = (int)$row['gtcs'] + (int)$row['gtpy'] + (int)$row['gtet'] + (int)$row['gtdc'] + (int)$row['gtrf'];
+            $gtcs = isset($row['gtcs']) ? (int)$row['gtcs'] : 0;
+            $gtpy = isset($row['gtpy']) ? (int)$row['gtpy'] : 0;
+            $gtet = isset($row['gtet']) ? (int)$row['gtet'] : 0;
+            $gtdc = isset($row['gtdc']) ? (int)$row['gtdc'] : 0;
+            $gtrf = isset($row['gtrf']) ? (int)$row['gtrf'] : 0;
+            $total_campaign = $gtcs + $gtpy + $gtet + $gtdc + $gtrf;
 
-            $data[] = [
-                'agent_name'                 => $row['agent_name'],
+            $formattedData[] = [
+                'agent_name'                 => $row['agent_name'] ?? '',
                 'inb_call_count'             => $inb_calls,
                 'inb_call_count_duration'    => $sum_dur,      // raw total seconds (for weighted avg)
                 'aht'                        => $aht,          // per-agent avg (display)
-                'gtcs'                       => (int)$row['gtcs'],
-                'gtpy'                       => (int)$row['gtpy'],
-                'gtet'                       => (int)$row['gtet'],
-                'gtdc'                       => (int)$row['gtdc'],
-                'gtrf'                       => (int)$row['gtrf'],
+                'gtcs'                       => $gtcs,
+                'gtpy'                       => $gtpy,
+                'gtet'                       => $gtet,
+                'gtdc'                       => $gtdc,
+                'gtrf'                       => $gtrf,
                 'acw'                        => $acw,          // per-agent avg (display)
                 'total_acw_seconds'          => $sum_acw,      // raw total seconds (for weighted avg)
                 'total_campaign'             => $total_campaign
             ];
         }
+        
+        return $formattedData;
+    } catch (Exception $e) {
+        error_log("Productivity Agent Metrics API Exception: " . $e->getMessage());
+        return [];
     }
-    return $data;
+}
+
+/**
+ * Fetch data grouped by AGENT for the date range, optional day range & agent filter.
+ * Now uses API instead of SQL query.
+ */
+function fetchDataByAgent($startDate, $endDate, $startDay = null, $endDay = null, $agent = '') {
+    // Fetch data from API instead of SQL
+    return fetchProductivityAgentMetricsFromAPI($startDate, $endDate, $startDay, $endDay, $agent);
 }
 
 function format_seconds_to_hhmmss($seconds) {
@@ -196,10 +310,10 @@ function renderTableByAgent($data, $title) {
 }
 
 // Fetch data for each day range including agent filter (now grouped by agent)
-$data_1_10   = fetchDataByAgent($mysqli, $startDate, $endDate, 1, 10,  $selected_agent);
-$data_11_20  = fetchDataByAgent($mysqli, $startDate, $endDate, 11, 20, $selected_agent);
-$data_21_end = fetchDataByAgent($mysqli, $startDate, $endDate, 21, 31, $selected_agent);
-$data_total  = fetchDataByAgent($mysqli, $startDate, $endDate, null, null, $selected_agent);
+$data_1_10   = fetchDataByAgent($startDate, $endDate, 1, 10,  $selected_agent);
+$data_11_20  = fetchDataByAgent($startDate, $endDate, 11, 20, $selected_agent);
+$data_21_end = fetchDataByAgent($startDate, $endDate, 21, 31, $selected_agent);
+$data_total  = fetchDataByAgent($startDate, $endDate, null, null, $selected_agent);
 ?>
 <!DOCTYPE html>
 <html>

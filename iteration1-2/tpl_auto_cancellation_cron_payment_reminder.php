@@ -3,83 +3,80 @@ date_default_timezone_set("Australia/Melbourne");
 ini_set('display_errors', '1');
 ini_set('display_startup_errors', '1');
 error_reporting(E_ALL);
-// Create the POST data string
 
-$mysqli = new mysqli('localhost', 'gaurat_sriharan', 'r)?2lc^Q0cAE', 'gaurat_gauratravel');
-//$mysqli = new mysqli("localhost","staginggauratr_usr_stag","yBvvnZ@Cvw8","staginggauratr_gau_stag");
+// Load WordPress to get API_BASE_URL constant from wp-config.php
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
 
-// Check connection
-if ($mysqli->connect_error) {
-    die("Connection failed: " . $mysqli->connect_error);
+// Get API base URL (should be defined in wp-config.php)
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1';
+
+// Helper function to call API
+function callAPI($url, $method = 'GET', $data = null) {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    
+    if ($method === 'POST') {
+        curl_setopt($ch, CURLOPT_POST, true);
+        if ($data) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        }
+    }
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+    
+    if ($curlError) {
+        error_log("API call failed: $curlError");
+        return ['error' => $curlError, 'http_code' => $httpCode];
+    }
+    
+    if ($httpCode === 200) {
+        return json_decode($response, true);
+    }
+    
+    error_log("API call returned HTTP $httpCode: " . substr($response, 0, 500));
+    return ['error' => 'HTTP ' . $httpCode, 'response' => $response];
 }
 
 $current_date_and_time = date("Y-m-d H:i:s");
 
-/* All types reminder email which sents in 20 mins after booking starts. */
-        $query = "SELECT 
-            bookings.auto_id, 
-            bookings.order_id, 
-            bookings.order_date, 
-            bookings.travel_date, 
-            bookings.payment_status, 
-            pays.trams_received_amount 
-        FROM wpk4_backend_travel_bookings bookings 
-        LEFT JOIN wpk4_backend_travel_booking_pax pax 
-            ON bookings.order_id = pax.order_id 
-            AND bookings.co_order_id = pax.co_order_id 
-            AND bookings.product_id = pax.product_id 
-        LEFT JOIN wpk4_backend_travel_payment_history pays 
-            ON bookings.order_id = pays.order_id 
-        WHERE 
-            bookings.payment_status = 'partially_paid' and bookings.sub_payment_status NOT IN ('BPAY Paid', 'BPAY Received')
-            AND bookings.order_date <= NOW() - INTERVAL 20 MINUTE AND bookings.order_date >= NOW() - INTERVAL 600 MINUTE 
-            AND (pays.order_id IS NULL OR CAST(pays.trams_received_amount AS DECIMAL(10,2)) = '0.00' ) 
-            AND NOT EXISTS (
-                SELECT 1 
-                FROM wpk4_backend_order_email_history email 
-                WHERE email.order_id = bookings.order_id 
-                AND email.email_type = 'Payment reminder'
-            )
-        ORDER BY 
-            bookings.auto_id ASC 
-        LIMIT 100;
-        ";
-        
-        $result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-        $row_counter = mysqli_num_rows($result);
-        $processedOrders = array();	
-        echo '</br></br>Email remider for GDeals & FIT</br></br>';
-        echo '<table><tr><th>Order ID / PNR</th><th>Order Date</th><th>payment</th><th>Travel date</th><th>Payment Status</th><th>Status</th></tr>';
-        while($row = mysqli_fetch_assoc($result))
-        {
-            $order_id = $row['order_id'];
-            if (in_array($order_id, $processedOrders)) {
-        		continue; // Skip to the next iteration if the order ID is already processed
-        	}
-        	$processedOrders[] = $order_id;
-        	
-        	require '/home/gaurat/public_html/wp-includes/class-phpmailer.php';
-        	require '/home/gaurat/public_html/wp-includes/PHPMailer/SMTP.php';
+// Call API to process payment reminders
+$apiResult = callAPI($base_url . '/auto-cancellation/payment-reminder/process', 'POST');
 
-            include("email/tpl_email_trigger_deposit_reminder.php");
-            
-            mysqli_query($mysqli, "insert into wpk4_backend_order_email_history (order_id, email_type, email_address, initiated_date, initiated_by, email_body, email_subject) 
-            values ('$order_id','Payment reminder','','$current_email_date','deposit_check_email_cron', '', 'Payment Reminder')") or die(mysqli_error($mysqli));
-        	
-            $new_status = 'email sent';
-            
-            echo "<tr>
-                <td>".$row['order_id']."</td>
-                <td>".$row['order_date']."</td>
-                <td>".$row['trams_received_amount']."</td>
-                <td>".$row['travel_date']."</td>
-                <td>".$row['payment_status']."</td>
-                <td>".$new_status."</td>
-            </tr>";
-        }
-        echo '</table>';
-        /* All types reminder email which sents in 20 mins after booking ends. */
-        
-        echo '</br></br></br>';
-        
+// Return JSON output for n8n
+header('Content-Type: application/json');
+
+if (isset($apiResult['error'])) {
+    // API call failed
+    echo json_encode([
+        "status" => "error",
+        "message" => "API call failed: " . $apiResult['error'],
+        "timestamp" => $current_date_and_time
+    ], JSON_PRETTY_PRINT);
+    exit;
+}
+
+if ($apiResult && isset($apiResult['status']) && $apiResult['status'] === 'success') {
+    // API returned success - use the data from API response
+    echo json_encode([
+        "status" => "success",
+        "timestamp" => $apiResult['data']['timestamp'] ?? $current_date_and_time,
+        "total_checked" => $apiResult['data']['total_checked'] ?? 0,
+        "emails_logged" => $apiResult['data']['emails_logged'] ?? 0,
+        "details" => $apiResult['data']['details'] ?? []
+    ], JSON_PRETTY_PRINT);
+} else {
+    // API returned error or unexpected format
+    echo json_encode([
+        "status" => "error",
+        "message" => $apiResult['message'] ?? 'Unknown error from API',
+        "timestamp" => $current_date_and_time,
+        "api_response" => $apiResult
+    ], JSON_PRETTY_PRINT);
+}
 ?>

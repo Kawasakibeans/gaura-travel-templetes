@@ -4,15 +4,304 @@
  * Template Post Type: post, page
  */
 
-$host = 'localhost';
-$db = 'gaurat_gauratravel';
-$user = 'gaurat_sriharan';
-$pass = 'r)?2lc^Q0cAE';
 
-$pdo = new PDO("mysql:host=$host;dbname=$db", $user, $pass);
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+// All database operations are handled through API endpoints defined in database_api_test_pamitha/routes/api.php
 
-$allPeriods = $pdo->query("SELECT DISTINCT period FROM wpk4_backend_incentive_criteria ORDER BY period DESC")->fetchAll(PDO::FETCH_COLUMN);
+// API Configuration
+$apiBaseUrl = 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api/public';
+
+// API Helper Functions
+function fetchIncentiveCriteriaPeriodsFromAPI(): array {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/incentive-criteria-periods';
+    
+    try {
+        $ch = curl_init($endpoint);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for incentive-criteria-periods: " . $curlError);
+            return [];
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("API HTTP Error for incentive-criteria-periods: Status code " . $httpCode . ", Response: " . $response);
+            return [];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for incentive-criteria-periods: " . json_last_error_msg() . ", Response: " . $response);
+            return [];
+        }
+        
+        // Handle different response formats
+        if (isset($data['data']) && is_array($data['data'])) {
+            $periods = array_column($data['data'], 'period');
+            return array_unique($periods);
+        } elseif (isset($data['periods']) && is_array($data['periods'])) {
+            return $data['periods'];
+        } elseif (is_array($data) && !empty($data)) {
+            return array_unique($data);
+        }
+        
+        return [];
+    } catch (Exception $e) {
+        error_log("API Exception for incentive-criteria-periods: " . $e->getMessage());
+        return [];
+    }
+}
+
+function fetchAgentTargetPathwayListFromAPI(string $rosterCode, string $period): ?array {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/agent-target-pathway/list';
+    
+    $params = [
+        'roster_code' => $rosterCode,
+        'period' => $period
+    ];
+    
+    $url = $endpoint . '?' . http_build_query($params);
+    
+    try {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for agent-target-pathway/list: " . $curlError);
+            return null;
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("API HTTP Error for agent-target-pathway/list: Status code " . $httpCode . ", Response: " . $response);
+            return null;
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for agent-target-pathway/list: " . json_last_error_msg() . ", Response: " . $response);
+            return null;
+        }
+        
+        // Handle different response formats
+        if (isset($data['data']) && is_array($data['data'])) {
+            return !empty($data['data']) ? $data['data'][0] : null;
+        } elseif (is_array($data) && !empty($data)) {
+            return $data;
+        }
+        
+        return null;
+    } catch (Exception $e) {
+        error_log("API Exception for agent-target-pathway/list: " . $e->getMessage());
+        return null;
+    }
+}
+
+function insertAgentTargetPathwayHistoryFromAPI(array $historyData): bool {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/agent-target-pathway/history';
+    
+    try {
+        $ch = curl_init($endpoint);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($historyData));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json'
+        ]);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for agent-target-pathway/history: " . $curlError);
+            return false;
+        }
+        
+        if ($httpCode !== 200 && $httpCode !== 201) {
+            error_log("API HTTP Error for agent-target-pathway/history: Status code " . $httpCode . ", Response: " . $response);
+            return false;
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for agent-target-pathway/history: " . json_last_error_msg() . ", Response: " . $response);
+            return false;
+        }
+        
+        return isset($data['success']) ? $data['success'] : ($httpCode === 200 || $httpCode === 201);
+    } catch (Exception $e) {
+        error_log("API Exception for agent-target-pathway/history: " . $e->getMessage());
+        return false;
+    }
+}
+
+function fetchAgentNameByRosterCodeFromAPI(string $rosterCode): ?string {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/agent-codes-agent-name-by-roster';
+    
+    $params = [
+        'roster_code' => $rosterCode
+    ];
+    
+    $url = $endpoint . '?' . http_build_query($params);
+    
+    try {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for agent-codes-agent-name-by-roster: " . $curlError);
+            return null;
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("API HTTP Error for agent-codes-agent-name-by-roster: Status code " . $httpCode . ", Response: " . $response);
+            return null;
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for agent-codes-agent-name-by-roster: " . json_last_error_msg() . ", Response: " . $response);
+            return null;
+        }
+        
+        // Handle different response formats
+        if (isset($data['data']['agent_name'])) {
+            return $data['data']['agent_name'];
+        } elseif (isset($data['agent_name'])) {
+            return $data['agent_name'];
+        } elseif (isset($data['data']) && is_array($data['data']) && isset($data['data'][0]['agent_name'])) {
+            return $data['data'][0]['agent_name'];
+        }
+        
+        return null;
+    } catch (Exception $e) {
+        error_log("API Exception for agent-codes-agent-name-by-roster: " . $e->getMessage());
+        return null;
+    }
+}
+
+function upsertAgentTargetPathwayFromAPI(array $pathwayData): bool {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/agent-target-pathway';
+    
+    try {
+        $ch = curl_init($endpoint);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($pathwayData));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json'
+        ]);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for agent-target-pathway: " . $curlError);
+            return false;
+        }
+        
+        if ($httpCode !== 200 && $httpCode !== 201) {
+            error_log("API HTTP Error for agent-target-pathway: Status code " . $httpCode . ", Response: " . $response);
+            return false;
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for agent-target-pathway: " . json_last_error_msg() . ", Response: " . $response);
+            return false;
+        }
+        
+        return isset($data['success']) ? $data['success'] : ($httpCode === 200 || $httpCode === 201);
+    } catch (Exception $e) {
+        error_log("API Exception for agent-target-pathway: " . $e->getMessage());
+        return false;
+    }
+}
+
+function fetchActiveAgentCodesFromAPI(): array {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/agent-codes-active-roster';
+    
+    try {
+        $ch = curl_init($endpoint);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for agent-codes-active-roster: " . $curlError);
+            return [];
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("API HTTP Error for agent-codes-active-roster: Status code " . $httpCode . ", Response: " . $response);
+            return [];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for agent-codes-active-roster: " . json_last_error_msg() . ", Response: " . $response);
+            return [];
+        }
+        
+        // Handle different response formats
+        if (isset($data['data']) && is_array($data['data'])) {
+            return $data['data'];
+        } elseif (is_array($data)) {
+            return $data;
+        }
+        
+        return [];
+    } catch (Exception $e) {
+        error_log("API Exception for agent-codes-active-roster: " . $e->getMessage());
+        return [];
+    }
+}
+
+$allPeriods = fetchIncentiveCriteriaPeriodsFromAPI();
+// Sort descending (most recent first) if not already sorted
+rsort($allPeriods);
 $latestPeriod = $allPeriods[0] ?? '';
 
 $period = $_GET['period'] ?? $latestPeriod;
@@ -21,7 +310,100 @@ $periodIndex = $periodIndex !== false ? $periodIndex : 0;
 $periods = array_slice($allPeriods, $periodIndex, 4);
 
 $selectedPeriod = $period;
-require_once get_template_directory() . '/templates/G360_Dashboard/agent-incentive/incentive_criteria.php';
+
+// Fetch incentive criteria from API instead of requiring local file
+function fetchIncentiveCriteriaFromAPI(string $period): array {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/agent-incentive/criteria';
+    
+    $params = ['period' => $period];
+    $url = $endpoint . '?' . http_build_query($params);
+    
+    try {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for agent-incentive/criteria: " . $curlError);
+            return [];
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("API HTTP Error for agent-incentive/criteria: Status code " . $httpCode . ", Response: " . $response);
+            return [];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for agent-incentive/criteria: " . json_last_error_msg() . ", Response: " . $response);
+            return [];
+        }
+        
+        // Handle different response formats
+        if (isset($data['data']) && is_array($data['data'])) {
+            return $data['data'];
+        } elseif (is_array($data)) {
+            return $data;
+        }
+        
+        return [];
+    } catch (Exception $e) {
+        error_log("API Exception for agent-incentive/criteria: " . $e->getMessage());
+        return [];
+    }
+}
+
+// Fetch criteria data from API
+$criteriaData = fetchIncentiveCriteriaFromAPI($period);
+
+// Initialize variables with defaults
+$slabs = $criteriaData['slabs'] ?? [];
+$fcs_multipliers = $criteriaData['fcs_multipliers'] ?? [];
+$daily_fcs_multipliers = $criteriaData['daily_fcs_multipliers'] ?? [];
+$daily_bonus = $criteriaData['daily_bonus'] ?? [];
+$eligibility = $criteriaData['eligibility'] ?? [];
+$daily_eligibility = $criteriaData['daily_eligibility'] ?? [];
+$daily_incentives = $criteriaData['daily_incentives'] ?? [];
+
+// Convert slabs array to indexed array if it's an associative array
+if (!empty($slabs) && is_array($slabs)) {
+    // Check if it's an associative array (keys are not sequential numbers)
+    $keys = array_keys($slabs);
+    $isAssociative = !empty($keys) && !is_numeric($keys[0]);
+    
+    if ($isAssociative) {
+        // Convert associative array to indexed array
+        $slabsArray = [];
+        foreach ($slabs as $key => $slab) {
+            if (is_array($slab)) {
+                // Ensure conversion is set
+                if (!isset($slab['conversion'])) {
+                    $slab['conversion'] = is_numeric($key) ? (int)$key : 0;
+                }
+                $slabsArray[] = $slab;
+            }
+        }
+        $slabs = $slabsArray;
+    } else {
+        // Already indexed, just ensure conversion is set
+        foreach ($slabs as &$slab) {
+            if (is_array($slab) && !isset($slab['conversion'])) {
+                $slab['conversion'] = 0;
+            }
+        }
+        unset($slab);
+    }
+} else {
+    $slabs = [];
+}
 
 // Handle selected FCS Multiplier (pick highest selected)
 $fcsMultiplier = 1;
@@ -57,23 +439,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
     // Insert data to pathway_history table 
     // First check if record exists
-    $checkStmt = $pdo->prepare("SELECT * FROM wpk4_backend_agent_target_pathway WHERE roster_code = :roster_code AND period = :period");
-    $checkStmt->execute([
-        'roster_code' => $roster_code,
-        'period' => $period
-    ]);
-    $existingPathway = $checkStmt->fetch(PDO::FETCH_ASSOC);
+    $existingPathway = fetchAgentTargetPathwayListFromAPI($roster_code, $period);
     // NEWCODE
     // If exists, copy to history before updating
     if ($existingPathway) {
-        $historyStmt = $pdo->prepare("INSERT INTO wpk4_backend_agent_target_pathway_history
-            (roster_code, target, period, conversion, rate, fcs_mult, rate_fcs, 
-             gtib_bonus, min_gtib, min_pif, daily_pif, total_estimate, created_at)
-            VALUES
-            ( :roster_code, :target, :period, :conversion, :rate, :fcs_mult, :rate_fcs,
-             :gtib_bonus, :min_gtib, :min_pif, :daily_pif, :total_estimate, :created_at)");
-        
-        $historyStmt->execute([
+        $historyData = [
             'roster_code' => $existingPathway['roster_code'],
             'target' => $existingPathway['target'],
             'period' => $existingPathway['period'],
@@ -86,45 +456,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             'min_pif' => $existingPathway['min_pif'],
             'daily_pif' => $existingPathway['daily_pif'],
             'total_estimate' => $existingPathway['total_estimate'],
-            'created_at' => $existingPathway['created_at']
-        ]);
+            'created_at' => $existingPathway['created_at'] ?? date('Y-m-d H:i:s')
+        ];
+        
+        insertAgentTargetPathwayHistoryFromAPI($historyData);
     }
     
     // Insert/update the pathway
 
-    $stmt = $pdo->prepare("SELECT agent_name FROM wpk4_backend_agent_codes WHERE roster_code = ?");
-    $stmt->execute([$roster_code]);
-    $agent = $stmt->fetch(PDO::FETCH_ASSOC);
-    $agent_name = $agent ? $agent['agent_name'] : '';
+    $agent_name = fetchAgentNameByRosterCodeFromAPI($roster_code);
 
     if (!$agent_name) {
         echo json_encode(['success' => false, 'message' => 'Agent not found']);
         exit;
     }
 
-    $stmt = $pdo->prepare("INSERT INTO wpk4_backend_agent_target_pathway (
-            roster_code, target, period,
-            conversion, rate, fcs_mult, rate_fcs, gtib_bonus,
-            min_gtib, min_pif, daily_pif, total_estimate, created_at
-        ) VALUES (
-            :roster_code, :target, :period,
-            :conversion, :rate, :fcs_mult, :rate_fcs, :gtib_bonus,
-            :min_gtib, :min_pif, :daily_pif, :total_estimate, NOW()
-        )
-        ON DUPLICATE KEY UPDATE
-            target = VALUES(target),
-            conversion = VALUES(conversion),
-            rate = VALUES(rate),
-            fcs_mult = VALUES(fcs_mult),
-            rate_fcs = VALUES(rate_fcs),
-            gtib_bonus = VALUES(gtib_bonus),
-            min_gtib = VALUES(min_gtib),
-            min_pif = VALUES(min_pif),
-            daily_pif = VALUES(daily_pif),
-            total_estimate = VALUES(total_estimate),
-            created_at = NOW()");
-
-    $success = $stmt->execute([
+    $pathwayData = [
         'roster_code' => $roster_code,
         'target' => $target,
         'period' => $period,
@@ -137,7 +484,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'min_pif' => $min_pif,
         'daily_pif' => $daily_pif,
         'total_estimate' => $total_estimate
-    ]);
+    ];
+    
+    $success = upsertAgentTargetPathwayFromAPI($pathwayData);
 
     echo json_encode(['success' => $success]);
     exit;
@@ -145,7 +494,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 $target = isset($_GET['target']) ? (int)$_GET['target'] : 0;
 $periodList = $allPeriods;
-$agents = $pdo->query("SELECT roster_code, agent_name FROM wpk4_backend_agent_codes WHERE status = 'active' ORDER BY agent_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$agents = fetchActiveAgentCodesFromAPI();
+// Sort by agent_name if not already sorted
+usort($agents, function($a, $b) {
+    return strcmp($a['agent_name'] ?? '', $b['agent_name'] ?? '');
+});
 
 $pathways = [];
 foreach ($slabs as $slab) {
@@ -333,7 +686,6 @@ $minGTIBBonusThreshold = $gtibBonuses ? min(array_keys($gtibBonuses)) : PHP_INT_
       opacity: 0.5;
       cursor: not-allowed;
     }
-    <style>
   .btn-group-toggle input[type="checkbox"] {
     display: none;
   }

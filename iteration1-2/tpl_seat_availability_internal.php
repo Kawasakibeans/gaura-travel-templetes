@@ -88,7 +88,7 @@ get_header();?>
 <div class='wpb_column vc_column_container vc_col-sm-12' id='manage_bookings' style='width:80%;margin:auto;padding:100px 0px;'>
 <?php
 
-error_reporting(E_ALL);
+//error_reporting(E_ALL);
 include("wp-config-custom.php");
 $query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='$ip_address'";
 $result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
@@ -443,14 +443,38 @@ function showresult(){
 	
     var xmlhttp = new XMLHttpRequest();
     xmlhttp.onreadystatechange = function() {
-      if (this.readyState == 4 && this.status == 200) {
+      if (this.readyState == 4) {
           // Hide the loading popup
           document.getElementById("loadingOverlay").style.display = "none";
-
-		  document.getElementById("showresults").innerHTML = this.responseText;
+          
+          if (this.status == 200) {
+              document.getElementById("showresults").innerHTML = this.responseText;
+          } else {
+              // Show error message
+              document.getElementById("showresults").innerHTML = 
+                  '<div style="background-color: #f8d7da; color: #721c24; padding: 20px; margin: 20px; border: 1px solid #f5c6cb; border-radius: 5px;">' +
+                  '<h3>Error Loading Results</h3>' +
+                  '<p>HTTP Status: ' + this.status + '</p>' +
+                  '<p>Please check the browser console for more details.</p>' +
+                  '</div>';
+              //console.error('AJAX Error:', this.status, this.statusText);
+          }
       }
     };
-    xmlhttp.open("GET","<?php echo $themepath; ?>/templates/tpl_seat_availability_internal_backend.php/?showresults=true&route="+routeid+"&datefrom="+tripdate_selector+"&dateto="+tripdate_selector+"&saleprice="+saleprice,true);
+    
+    xmlhttp.onerror = function() {
+        document.getElementById("loadingOverlay").style.display = "none";
+        document.getElementById("showresults").innerHTML = 
+            '<div style="background-color: #f8d7da; color: #721c24; padding: 20px; margin: 20px; border: 1px solid #f5c6cb; border-radius: 5px;">' +
+            '<h3>Network Error</h3>' +
+            '<p>Failed to connect to the server. Please check your internet connection and try again.</p>' +
+            '</div>';
+        //console.error('Network Error');
+    };
+    
+    var url = "<?php echo $themepath; ?>/templates/tpl_seat_availability_internal_backend.php/?showresults=true&route="+routeid+"&datefrom="+tripdate_selector+"&dateto="+tripdate_selector+"&saleprice="+saleprice;
+    //console.log('Making request to:', url);
+    xmlhttp.open("GET", url, true);
     xmlhttp.send();
 }
 
@@ -496,17 +520,17 @@ function showresult(){
                         }
                     },
                     function (start, end) {
-						var departure_start = start.format().slice(0,10);
-						//selectedSubstring = originalString.substring(9, 15);
-						var departure_end = end.format().slice(0,10);
+						var departure_start = start.format('YYYY-MM-DD');
+						var departure_end = end.format('YYYY-MM-DD');
 						
 						document.getElementById("tripdate_selector").value = departure_start + ' - ' + departure_end;
-						document.getElementById("tripdate_selector_backend").value = start.format() + end.format();
+						// Store dates in format: YYYY-MM-DDYYYY-MM-DD (20 characters total, second date starts at position 10)
+						document.getElementById("tripdate_selector_backend").value = departure_start + departure_end;
 						//showresult();
                     })
 				window.addEventListener('apply.daterangepicker', function (ev) {
-                    console.log(ev.detail.startDate.format('YYYY-MM-DD'));
-                    console.log(ev.detail.endDate.format('YYYY-MM-DD'));
+                    //console.log(ev.detail.startDate.format('YYYY-MM-DD'));
+                    //console.log(ev.detail.endDate.format('YYYY-MM-DD'));
                 });	
 			});
     </script>

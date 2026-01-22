@@ -7,9 +7,44 @@ ini_set('display_errors', 1);
 
 require_once(dirname(__FILE__, 5) . '/wp-config.php');
 
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_error) {
-    die("Database connection failed: " . $mysqli->connect_error);
+if (!defined('API_BASE_URL')) {
+    throw new RuntimeException('API_BASE_URL is not defined');
+}
+
+$apiBaseUrl = API_BASE_URL;
+
+function fetch_bom_user_rights_api(string $endpoint, array $params = []): array {
+    global $apiBaseUrl;
+
+    $url = rtrim($apiBaseUrl, '/') . '/' . ltrim($endpoint, '/');
+    if (!empty($params)) {
+        $url .= '?' . http_build_query($params);
+    }
+
+    $response = wp_remote_get($url, [
+        'timeout' => 30,
+        'headers' => [
+            'Accept' => 'application/json',
+        ],
+    ]);
+
+    if (is_wp_error($response)) {
+        throw new RuntimeException('API request failed: ' . $response->get_error_message());
+    }
+
+    $body = wp_remote_retrieve_body($response);
+    $decoded = json_decode($body, true);
+
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new RuntimeException('Invalid API response: ' . json_last_error_msg());
+    }
+
+    if (($decoded['status'] ?? '') !== 'success') {
+        $message = $decoded['message'] ?? 'Unknown API error';
+        throw new RuntimeException($message);
+    }
+
+    return $decoded['data'] ?? [];
 }
 
 // Custom pagination parameter to avoid conflicts with WordPress
@@ -17,51 +52,21 @@ $per_page = 20; // Items per page
 $page = isset($_GET['agent_page']) ? max(1, intval($_GET['agent_page'])) : 1;
 $offset = ($page - 1) * $per_page;
 
-// Fetch data with pagination
-$sql = "
-    SELECT a.meta_value, c.agent_name, c.sale_manager
-    FROM wpk4_usermeta a
-    LEFT JOIN wpk4_users b ON a.user_id = b.ID
-    LEFT JOIN wpk4_backend_agent_codes c ON b.user_login = c.wordpress_user_name
-    WHERE a.meta_key = 'wpk4_capabilities' AND c.agent_name != '' AND c.location = 'BOM'
-    LIMIT $offset, $per_page
-";
-$result = $mysqli->query($sql);
-
-if (!$result) {
-    die("Query error: " . $mysqli->error);
+try {
+    $listData = fetch_bom_user_rights_api('user-rights/bom/agents', [
+        'limit' => $per_page,
+        'page' => $page,
+    ]);
+    $countData = fetch_bom_user_rights_api('user-rights/bom/agents/count');
+} catch (Throwable $e) {
+    wp_die('Failed to load BOM agent data: ' . esc_html($e->getMessage()));
 }
 
-// Total rows for pagination
-$count_query = "
-    SELECT COUNT(*) as total
-    FROM wpk4_usermeta a
-    LEFT JOIN wpk4_users b ON a.user_id = b.ID
-    LEFT JOIN wpk4_backend_agent_codes c ON b.user_login = c.wordpress_user_name
-    WHERE a.meta_key = 'wpk4_capabilities' AND c.agent_name != '' AND c.location = 'BOM'
-";
-$count_result = $mysqli->query($count_query);
-$total_rows = $count_result->fetch_assoc()['total'];
-$total_pages = ceil($total_rows / $per_page);
-
-$agents = [];
-$allKeys = [];
-
-// Process results
-while ($row = $result->fetch_assoc()) {
-    $metaArray = @unserialize($row['meta_value']);
-    if (is_array($metaArray)) {
-        foreach (array_keys($metaArray) as $key) {
-            if (!in_array($key, $allKeys)) $allKeys[] = $key;
-        }
-    }
-
-    $agents[] = [
-        'agent_name'   => $row['agent_name'],
-        'sale_manager' => $row['sale_manager'],
-        'meta_array'   => $metaArray
-    ];
-}
+$agents = $listData['agents'] ?? [];
+$allKeys = $listData['all_keys'] ?? [];
+$total_rows = isset($countData['total']) ? (int)$countData['total'] : (int)($listData['total'] ?? 0);
+$total_rows = max(0, $total_rows);
+$total_pages = $total_rows > 0 ? (int)ceil($total_rows / $per_page) : 1;
 
 sort($allKeys);
 
@@ -150,7 +155,3 @@ table.agent-access th:first-child, table.agent-access td:first-child { text-alig
         <a href="<?php echo get_agent_page_link($total_pages); ?>">Last &raquo;</a>
     <?php endif; ?>
 </div>
-
-<?php
-$mysqli->close();
-?>

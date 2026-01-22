@@ -6,6 +6,9 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
+// API Configuration
+$apiBaseUrl = 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public';
+
 // DB connection
 require_once(dirname(__FILE__, 5) . '/wp-config.php');
 $mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
@@ -37,81 +40,166 @@ if ($res && $res->num_rows > 0) {
     }
 }
 
+// API Helper Functions
+function fetchAgentTicketSummaryFromAPI(string $startDate, string $endDate, ?string $agentName = null): array {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/after-sale-productivity-agent-ticket-summary';
+    
+    $params = [
+        'start_date' => $startDate,
+        'end_date' => $endDate
+    ];
+    
+    if ($agentName !== null && $agentName !== '') {
+        $params['agent_name'] = $agentName;
+    }
+    
+    $url = $endpoint . '?' . http_build_query($params);
+    
+    try {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for after-sale-productivity-agent-ticket-summary: " . $curlError);
+            return [];
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("API HTTP Error for after-sale-productivity-agent-ticket-summary: Status code " . $httpCode . ", Response: " . $response);
+            return [];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for after-sale-productivity-agent-ticket-summary: " . json_last_error_msg() . ", Response: " . $response);
+            return [];
+        }
+        
+        // Handle different response formats
+        if (isset($data['data']) && is_array($data['data'])) {
+            return $data['data'];
+        } elseif (isset($data['records']) && is_array($data['records'])) {
+            return $data['records'];
+        } elseif (is_array($data)) {
+            return $data;
+        }
+        
+        return [];
+    } catch (Exception $e) {
+        error_log("API Exception for after-sale-productivity-agent-ticket-summary: " . $e->getMessage());
+        return [];
+    }
+}
+
+function fetchAgentTicketSummaryActiveFromAPI(string $startDate, string $endDate, ?string $agentName = null): array {
+    global $apiBaseUrl;
+    $endpoint = rtrim($apiBaseUrl, '/') . '/v1/after-sale-productivity-agent-ticket-summary-active';
+    
+    $params = [
+        'start_date' => $startDate,
+        'end_date' => $endDate
+    ];
+    
+    if ($agentName !== null && $agentName !== '') {
+        $params['agent_name'] = $agentName;
+    }
+    
+    $url = $endpoint . '?' . http_build_query($params);
+    
+    try {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        if ($response === false || !empty($curlError)) {
+            error_log("API Error for after-sale-productivity-agent-ticket-summary-active: " . $curlError);
+            return [];
+        }
+        
+        if ($httpCode !== 200) {
+            error_log("API HTTP Error for after-sale-productivity-agent-ticket-summary-active: Status code " . $httpCode . ", Response: " . $response);
+            return [];
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("API JSON Error for after-sale-productivity-agent-ticket-summary-active: " . json_last_error_msg() . ", Response: " . $response);
+            return [];
+        }
+        
+        // Handle different response formats
+        if (isset($data['data']) && is_array($data['data'])) {
+            return $data['data'];
+        } elseif (isset($data['records']) && is_array($data['records'])) {
+            return $data['records'];
+        } elseif (is_array($data)) {
+            return $data;
+        }
+        
+        return [];
+    } catch (Exception $e) {
+        error_log("API Exception for after-sale-productivity-agent-ticket-summary-active: " . $e->getMessage());
+        return [];
+    }
+}
+
+// Helper class to mimic mysqli_result for compatibility
+class ArrayResult {
+    private $data;
+    private $position = 0;
+    public $num_rows;
+    
+    public function __construct(array $data) {
+        $this->data = $data;
+        $this->num_rows = count($data);
+    }
+    
+    public function fetch_assoc() {
+        if ($this->position < count($this->data)) {
+            return $this->data[$this->position++];
+        }
+        return null;
+    }
+    
+    // Reset position for re-iteration
+    public function data_seek($position = 0) {
+        $this->position = $position;
+    }
+}
+
 // Helper: fetch aggregated data by date for given range & agent filter
 function fetchDateAggregatedData($mysqli, $start, $end, $agentName = '') {
-    $sql = "
-        SELECT a.agent_name, 
-            SUM(fit_ticketed) AS fit_ticketed,
-            SUM(gdeal_ticketed) AS gdeal_ticketed,
-            SUM(ticket_issued) AS ticket_issued,
-            sum(ctg) as ctg,
-            sum(gkt_iata) as gkt_iata,
-            sum(ifn_iata) as ifn_iata,
-            sum(gilpin) as gilpin,
-            sum(CCUVS32NQ) as CCUVS32NQ,
-            sum(MELA821CV) as MELA821CV,
-            sum(I5FC) as I5FC,
-            sum(MELA828FN) as MELA828FN,
-            sum(CCUVS32MV) as CCUVS32MV
-        FROM wpk4_agent_after_sale_productivity_report
-        WHERE date BETWEEN ? AND ? AND agent_name <> 'ABDN'
-    ";
-    $params = [$start, $end];
-    $types = "ss";
-
-    if ($agentName !== '') {
-        $sql .= " AND agent_name = ?";
-        $params[] = $agentName;
-        $types .= "s";
-    }
-    $sql .= " GROUP BY agent_name having SUM(ticket_issued) > 0 ORDER BY date ASC";
-
-    $stmt = $mysqli->prepare($sql);
-    $stmt->bind_param($types, ...$params);
-    $stmt->execute();
-    return $stmt->get_result();
+    $data = fetchAgentTicketSummaryFromAPI($start, $end, $agentName);
+    return new ArrayResult($data);
 }
 
 // Helper: fetch aggregated data by agent for given range & agent filter
 function fetchAgentAggregatedData($mysqli, $start, $end, $agentName = '') {
-    $sql = "
-        SELECT a.agent_name, 
-            SUM(fit_ticketed) AS fit_ticketed,
-            SUM(gdeal_ticketed) AS gdeal_ticketed,
-            SUM(ticket_issued) AS ticket_issued,
-            sum(ctg) as ctg,
-            sum(gkt_iata) as gkt_iata,
-            sum(ifn_iata) as ifn_iata,
-            sum(gilpin) as gilpin,
-            sum(CCUVS32NQ) as CCUVS32NQ,
-            sum(MELA821CV) as MELA821CV,
-            sum(I5FC) as I5FC,
-            sum(MELA828FN) as MELA828FN,
-            sum(CCUVS32MV) as CCUVS32MV
-        FROM wpk4_agent_after_sale_productivity_report a
-        join wpk4_backend_agent_codes b on a.tsr = b.tsr and b.status = 'active'
-        WHERE a.date BETWEEN ? AND ? AND a.agent_name <> 'ABDN'
-    ";
-    $params = [$start, $end];
-    $types = "ss";
-
-    if ($agentName !== '') {
-        $sql .= " AND a.agent_name = ?";
-        $params[] = $agentName;
-        $types .= "s";
-    }
-    $sql .= " GROUP BY a.agent_name having SUM(a.ticket_issued) > 0 ORDER BY a.agent_name ASC";
-
-    $stmt = $mysqli->prepare($sql);
-    $stmt->bind_param($types, ...$params);
-    $stmt->execute();
-    return $stmt->get_result();
+    $data = fetchAgentTicketSummaryActiveFromAPI($start, $end, $agentName);
+    return new ArrayResult($data);
 }
 
 // Date ranges for tables within filter range
 $startTimestamp = strtotime($startDate);
 $endTimestamp = strtotime($endDate);
 $startMonth = date('Y-m', $startTimestamp);
+$endMonth = date('Y-m', $endTimestamp);
 
 // Define ranges, but clipped to $startDate and $endDate to avoid showing outside filter
 function clipDateRange($start, $end, $filterStart, $filterEnd) {
@@ -121,19 +209,29 @@ function clipDateRange($start, $end, $filterStart, $filterEnd) {
     return [$start, $end];
 }
 
-// Get the last day of month for start month
-$lastDayOfMonth = date('t', $startTimestamp);
-$monthStartStr = date('Y-m', $startTimestamp);
+// Only show period breakdown if date range is within a single month
+$showPeriods = ($startMonth === $endMonth);
 
-// Define the 3 ranges for the month (1–10, 11–20, 21–end)
-$range1 = clipDateRange("$monthStartStr-01", "$monthStartStr-10", $startDate, $endDate);
-$range2 = clipDateRange("$monthStartStr-11", "$monthStartStr-20", $startDate, $endDate);
-$range3 = clipDateRange("$monthStartStr-21", "$monthStartStr-$lastDayOfMonth", $startDate, $endDate);
+$data1 = null;
+$data2 = null;
+$data3 = null;
 
-// Fetch data for each range (skip if null)
-$data1 = $range1 ? fetchAgentAggregatedData($mysqli, $range1[0], $range1[1], $selected_agent) : null;
-$data2 = $range2 ? fetchAgentAggregatedData($mysqli, $range2[0], $range2[1], $selected_agent) : null;
-$data3 = $range3 ? fetchAgentAggregatedData($mysqli, $range3[0], $range3[1], $selected_agent) : null;
+if ($showPeriods) {
+    // Get the last day of month for start month
+    $lastDayOfMonth = date('t', $startTimestamp);
+    $monthStartStr = date('Y-m', $startTimestamp);
+    
+    // Define the 3 ranges for the month (1–10, 11–20, 21–end)
+    $range1 = clipDateRange("$monthStartStr-01", "$monthStartStr-10", $startDate, $endDate);
+    $range2 = clipDateRange("$monthStartStr-11", "$monthStartStr-20", $startDate, $endDate);
+    $range3 = clipDateRange("$monthStartStr-21", "$monthStartStr-$lastDayOfMonth", $startDate, $endDate);
+    
+    // Fetch data for each range (skip if null)
+    $data1 = $range1 ? fetchAgentAggregatedData($mysqli, $range1[0], $range1[1], $selected_agent) : null;
+    $data2 = $range2 ? fetchAgentAggregatedData($mysqli, $range2[0], $range2[1], $selected_agent) : null;
+    $data3 = $range3 ? fetchAgentAggregatedData($mysqli, $range3[0], $range3[1], $selected_agent) : null;
+}
+
 $dataAll = fetchAgentAggregatedData($mysqli, $startDate, $endDate, $selected_agent);
 ?>
 
@@ -418,7 +516,12 @@ $dataAll = fetchAgentAggregatedData($mysqli, $startDate, $endDate, $selected_age
                         <tbody>";
                 $grand_fit = $grand_gdeal = $grand_gkt_iata = $grand_ifn_iata = $grand_ctg = $grand_gilpin = $grand_CCUVS32NQ = $grand_MELA821CV = $grand_I5FC = $grand_MELA828FN = $grand_CCUVS32MV = $grand_ticket = 0;
                 if ($data && $data->num_rows > 0) {
+                    // Reset position if it's an ArrayResult
+                    if (is_object($data) && method_exists($data, 'data_seek')) {
+                        $data->data_seek(0);
+                    }
                     while ($row = $data->fetch_assoc()) {
+                        if ($row === null) break;
                         echo "<tr>
                                 <td>{$row['agent_name']}</td>
                                 <td>{$row['fit_ticketed']}</td>
@@ -468,9 +571,11 @@ $dataAll = fetchAgentAggregatedData($mysqli, $startDate, $endDate, $selected_age
                 echo "</tbody></table>";
             }
 
-            if ($data1) renderAgentTable("Day 1–10 Performance", $data1);
-            if ($data2) renderAgentTable("Day 11–20 Performance", $data2);
-            if ($data3) renderAgentTable("Day 21–End of Month Performance", $data3);
+            if ($showPeriods) {
+                if ($data1) renderAgentTable("Day 1–10 Performance", $data1);
+                if ($data2) renderAgentTable("Day 11–20 Performance", $data2);
+                if ($data3) renderAgentTable("Day 21–End of Month Performance", $data3);
+            }
             renderAgentTable("Total for Selected Date Range", $dataAll);
             ?>
         </div>

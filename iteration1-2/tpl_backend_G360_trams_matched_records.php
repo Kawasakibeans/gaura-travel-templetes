@@ -1,20 +1,27 @@
 <?php
 session_start();
 
-// Database connection
-$servername = "localhost";
-$username = "gaurat_sriharan";
-$password = "r)?2lc^Q0cAE";
-$dbname = "gaurat_gauratravel";
-
-
-
-try {
-    $pdo = new PDO("mysql:host=$servername;dbname=$dbname;charset=utf8", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch(PDOException $e) {
-    die("Connection failed: " . $e->getMessage());
+// Define API base URL if not already defined
+if (!defined('API_BASE_URL')) {
+    define('API_BASE_URL', 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates/database_api_test_pamitha/public/v1');
 }
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// // Database connection
+// $servername = "localhost";
+// $username = "gaurat_sriharan";
+// $password = "r)?2lc^Q0cAE";
+// $dbname = "gaurat_gauratravel";
+// 
+// try {
+//     $pdo = new PDO("mysql:host=$servername;dbname=$dbname;charset=utf8", $username, $password);
+//     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+// } catch(PDOException $e) {
+//     die("Connection failed: " . $e->getMessage());
+// }
+// ============================================================================
 
 function parseDate($excelDate) {
     if (empty($excelDate)) return null;
@@ -64,73 +71,149 @@ function extractNumeric($value) {
     return isset($matches[0]) ? floatval($matches[0]) : 0;
 }
 
-function updateDatabaseRecord($pdo, $data) {
-    $sqlUpdate = "UPDATE wpk4_backend_trams_invoice SET 
-            client_linkno = ?,
-            issuedate = ?,
-            branch_linkno = ?,
-            recordlocator = ?,
-            paystatus_linkcode = ?,
-            invoicetype_linkcode = ?,
-            partpayamt = ?,
-            invoicegroup = ?,
-            firstinsideagentbkg_linkno = ?,
-            firstoutsideagentbkg_linkno = ?,
-            calcinvoicenumber = ?,
-            altinvoicenumber = ?,
-            arc_linkno = ?,
-            pnrcreationdate = ?,
-            receivedby = ?,
-            facturano = ?,
-            serviciono = ?,
-            itininvremarks = ?,
-            homehost_linkno = ?,
-            syncmoddatetime = NOW(),
-            marketid = ?,
-            agency_linkno = ?,
-            accountingremarks = ?,
-            remarks = ?
-        WHERE invoicenumber = ?";
+function updateDatabaseRecord($data) {
+    // ============================================================================
+    // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+    // ============================================================================
+    // $sqlUpdate = "UPDATE wpk4_backend_trams_invoice SET 
+    //         client_linkno = ?,
+    //         issuedate = ?,
+    //         branch_linkno = ?,
+    //         recordlocator = ?,
+    //         paystatus_linkcode = ?,
+    //         invoicetype_linkcode = ?,
+    //         partpayamt = ?,
+    //         invoicegroup = ?,
+    //         firstinsideagentbkg_linkno = ?,
+    //         firstoutsideagentbkg_linkno = ?,
+    //         calcinvoicenumber = ?,
+    //         altinvoicenumber = ?,
+    //         arc_linkno = ?,
+    //         pnrcreationdate = ?,
+    //         receivedby = ?,
+    //         facturano = ?,
+    //         serviciono = ?,
+    //         itininvremarks = ?,
+    //         homehost_linkno = ?,
+    //         syncmoddatetime = NOW(),
+    //         marketid = ?,
+    //         agency_linkno = ?,
+    //         accountingremarks = ?,
+    //         remarks = ?
+    //     WHERE invoicenumber = ?";
+    // 
+    // $stmtUpdate = $pdo->prepare($sqlUpdate);
+    // $mainTableSuccess = $stmtUpdate->execute([
+    //     $data['Client Link No'] ?? null,
+    //     isset($data['Issue Date']) ? parseDate($data['Issue Date']) : null,
+    //     $data['Branch Link No'] ?? null,
+    //     $data['Record Locator'] ?? null,
+    //     $data['Pay Status'] ?? null,
+    //     $data['Invoice Type'] ?? null,
+    //     $data['Partial Payment Amount'] ?? 0,
+    //     $data['Invoice Group'] ?? null,
+    //     $data['First Inside Agent'] ?? null,
+    //     $data['First Outside Agent'] ?? null,
+    //     $data['Calculated Invoice Number'] ?? null,
+    //     $data['Alternate Invoice Number'] ?? null,
+    //     $data['ARC Link No'] ?? null,
+    //     isset($data['PNR Creation Date']) ? parseDate($data['PNR Creation Date']) : null,
+    //     $data['Received By'] ?? null,
+    //     $data['Factura No'] ?? null,
+    //     $data['Servicio No'] ?? null,
+    //     $data['Itinerary Remarks'] ?? null,
+    //     $data['Home Host Link No'] ?? null,
+    //     $data['Market ID'] ?? null,
+    //     $data['Agency Link No'] ?? null,
+    //     $data['Accounting Remarks'] ?? null,
+    //     $data['Remarks'] ?? null,
+    //     $data['Invoice #']
+    // ]);
+    // 
+    // if (!$mainTableSuccess) {
+    //     $errorInfo = $stmtUpdate->errorInfo();
+    //     error_log('SQL Update Error: ' . print_r($errorInfo, true));
+    //     return 'SQL Error: ' . $errorInfo[2];
+    // }
+    // 
+    // if ($stmtUpdate->rowCount() == 0) {
+    //     return 'No record updated for Invoice: ' . ($data['Invoice #'] ?? '');
+    // }
+    // 
+    // return true;
+    // ============================================================================
     
-    $stmtUpdate = $pdo->prepare($sqlUpdate);
-    $mainTableSuccess = $stmtUpdate->execute([
-        $data['Client Link No'] ?? null,
-        isset($data['Issue Date']) ? parseDate($data['Issue Date']) : null,
-        $data['Branch Link No'] ?? null,
-        $data['Record Locator'] ?? null,
-        $data['Pay Status'] ?? null,
-        $data['Invoice Type'] ?? null,
-        $data['Partial Payment Amount'] ?? 0,
-        $data['Invoice Group'] ?? null,
-        $data['First Inside Agent'] ?? null,
-        $data['First Outside Agent'] ?? null,
-        $data['Calculated Invoice Number'] ?? null,
-        $data['Alternate Invoice Number'] ?? null,
-        $data['ARC Link No'] ?? null,
-        isset($data['PNR Creation Date']) ? parseDate($data['PNR Creation Date']) : null,
-        $data['Received By'] ?? null,
-        $data['Factura No'] ?? null,
-        $data['Servicio No'] ?? null,
-        $data['Itinerary Remarks'] ?? null,
-        $data['Home Host Link No'] ?? null,
-        $data['Market ID'] ?? null,
-        $data['Agency Link No'] ?? null,
-        $data['Accounting Remarks'] ?? null,
-        $data['Remarks'] ?? null,
-        $data['Invoice #']
-    ]);
-    
-    if (!$mainTableSuccess) {
-        $errorInfo = $stmtUpdate->errorInfo();
-        error_log('SQL Update Error: ' . print_r($errorInfo, true));
-        return 'SQL Error: ' . $errorInfo[2];
+    // Update invoice via API
+    $invoiceNumber = $data['Invoice #'] ?? '';
+    if (empty($invoiceNumber)) {
+        return 'Invoice number is required';
     }
     
-    if ($stmtUpdate->rowCount() == 0) {
-        return 'No record updated for Invoice: ' . ($data['Invoice #'] ?? '');
-    }
+    $url = API_BASE_URL . '/trams-invoice/invoice/' . urlencode($invoiceNumber);
     
-    return true;
+    $updateData = [
+        'client_linkno' => $data['Client Link No'] ?? null,
+        'issuedate' => isset($data['Issue Date']) ? parseDate($data['Issue Date']) : null,
+        'branch_linkno' => $data['Branch Link No'] ?? null,
+        'recordlocator' => $data['Record Locator'] ?? null,
+        'paystatus_linkcode' => $data['Pay Status'] ?? null,
+        'invoicetype_linkcode' => $data['Invoice Type'] ?? null,
+        'partpayamt' => $data['Partial Payment Amount'] ?? 0,
+        'invoicegroup' => $data['Invoice Group'] ?? null,
+        'firstinsideagentbkg_linkno' => $data['First Inside Agent'] ?? null,
+        'firstoutsideagentbkg_linkno' => $data['First Outside Agent'] ?? null,
+        'calcinvoicenumber' => $data['Calculated Invoice Number'] ?? null,
+        'altinvoicenumber' => $data['Alternate Invoice Number'] ?? null,
+        'arc_linkno' => $data['ARC Link No'] ?? null,
+        'pnrcreationdate' => isset($data['PNR Creation Date']) ? parseDate($data['PNR Creation Date']) : null,
+        'receivedby' => $data['Received By'] ?? null,
+        'facturano' => $data['Factura No'] ?? null,
+        'serviciono' => $data['Servicio No'] ?? null,
+        'itininvremarks' => $data['Itinerary Remarks'] ?? null,
+        'homehost_linkno' => $data['Home Host Link No'] ?? null,
+        'marketid' => $data['Market ID'] ?? null,
+        'agency_linkno' => $data['Agency Link No'] ?? null,
+        'accountingremarks' => $data['Accounting Remarks'] ?? null,
+        'remarks' => $data['Remarks'] ?? null,
+    ];
+    
+    $postData = json_encode($updateData);
+    
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 0,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'PUT',
+        CURLOPT_POSTFIELDS => $postData,
+        CURLOPT_HTTPHEADER => array(
+            'Content-Type: application/json'
+        ),
+    ));
+    
+    $response = curl_exec($curl);
+    $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+    
+    $responseData = json_decode($response, true);
+    
+    if ($httpCode >= 200 && $httpCode < 300) {
+        if (isset($responseData['status']) && $responseData['status'] === 'success') {
+            return true;
+        } else {
+            $errorMsg = $responseData['message'] ?? 'Unknown error';
+            error_log('API Update Error: ' . $errorMsg);
+            return 'API Error: ' . $errorMsg;
+        }
+    } else {
+        $errorMsg = $responseData['message'] ?? 'HTTP Error: ' . $httpCode;
+        error_log('API Update Error: ' . $errorMsg);
+        return 'API Error: ' . $errorMsg;
+    }
 }
 
 // Process CSV upload
@@ -223,10 +306,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['csv_file'])) {
         // Batch query for existing invoices
         $existingInvoices = [];
         if (!empty($invoiceNumbers)) {
-            $placeholders = implode(',', array_fill(0, count($invoiceNumbers), '?'));
-            $stmt = $pdo->prepare("SELECT invoicenumber FROM wpk4_backend_trams_invoice WHERE invoicenumber IN ($placeholders)");
-            $stmt->execute($invoiceNumbers);
-            $existingInvoices = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+            // ============================================================================
+            // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+            // ============================================================================
+            // $placeholders = implode(',', array_fill(0, count($invoiceNumbers), '?'));
+            // $stmt = $pdo->prepare("SELECT invoicenumber FROM wpk4_backend_trams_invoice WHERE invoicenumber IN ($placeholders)");
+            // $stmt->execute($invoiceNumbers);
+            // $existingInvoices = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+            // ============================================================================
+            
+            // Fetch existing invoices from API
+            $url = API_BASE_URL . '/trams-invoice/check-invoices';
+            $postData = json_encode(['invoice_numbers' => $invoiceNumbers]);
+            
+            $curl = curl_init();
+            curl_setopt_array($curl, array(
+                CURLOPT_URL => $url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_ENCODING => '',
+                CURLOPT_MAXREDIRS => 10,
+                CURLOPT_TIMEOUT => 0,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+                CURLOPT_CUSTOMREQUEST => 'POST',
+                CURLOPT_POSTFIELDS => $postData,
+                CURLOPT_HTTPHEADER => array(
+                    'Content-Type: application/json'
+                ),
+            ));
+            
+            $response = curl_exec($curl);
+            curl_close($curl);
+            
+            $responseData = json_decode($response, true);
+            
+            if (isset($responseData['status']) && $responseData['status'] === 'success') {
+                if (isset($responseData['data']['invoice_numbers'])) {
+                    $existingInvoices = $responseData['data']['invoice_numbers'];
+                } elseif (isset($responseData['data']) && is_array($responseData['data'])) {
+                    // Extract invoice numbers from array of objects
+                    $existingInvoices = array_column($responseData['data'], 'invoicenumber');
+                }
+            }
         }
 
         // Process data rows
@@ -347,7 +468,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_records') {
     
     foreach ($_POST['data'] as $item) {
         try {
-            if (updateDatabaseRecord($pdo, $item)) {
+            if (updateDatabaseRecord($item)) {
                 $updated++;
             }
         } catch (Exception $e) {

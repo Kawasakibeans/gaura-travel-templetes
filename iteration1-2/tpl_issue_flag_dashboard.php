@@ -176,645 +176,88 @@ if(mysqli_num_rows($result_ip_selection) > 0 )
 		</div>
 
 		<?php
-		// Initialize issues array
+		// Fetch data from Issue Flag Dashboard API
 		$all_issues = array();
+		$filtered_issues = array();
 		$query_errors = array();
+		$api_error = '';
+		$stats = array('total' => 0, 'd1' => 0, 'd7' => 0, 'd10' => 0);
 
-		// Helper function to calculate priority based on travel date
-		function getPriority($travel_date) {
-			if(empty($travel_date)) return 'Other';
-			$today = date('Y-m-d');
-			$days_diff = (strtotime($travel_date) - strtotime($today)) / (60 * 60 * 24);
-			
-			if ($days_diff <= 1) {
-				return 'D-1';
-			} elseif ($days_diff <= 7) {
-				return 'D-7';
-			} elseif ($days_diff <= 10) {
-				return 'D-10';
-			} else {
-				return 'Other';
-			}
-		}
-
-		// Helper function to execute query with error handling
-		function executeQuery($mysqli, $query, $query_name, &$query_errors) {
-			$result = mysqli_query($mysqli, $query);
-			if(!$result) {
-				$query_errors[] = array(
-					'query' => $query_name,
-					'error' => mysqli_error($mysqli)
-				);
-				return false;
-			}
-			return $result;
-		}
-
-		// 1. TICKETING ISSUES
-		
-		// 1.1 - WPT order type with date gap > 10 days
-		$query_ticketing_1 = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				pax.late_modified,
-				pax.ticketed_on,
-				pax.fname,
-				pax.lname,
-				ism.date as issue_date
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			LEFT JOIN wpk4_ticketing_screen_issue_message ism ON 1=1
-			WHERE tb.order_type = 'WPT'
-			AND tb.travel_date > CURDATE()
-			AND DATEDIFF(
-				COALESCE(pax.late_modified, pax.ticketed_on),
-				DATE_ADD(CURDATE(), INTERVAL COALESCE(ism.date, 0) DAY)
-			) > 10
-			LIMIT 100
-		";
-		$result_ticketing_1 = executeQuery($mysqli, $query_ticketing_1, 'Ticketing Query 1', $query_errors);
-		if($result_ticketing_1) {
-			while($row = mysqli_fetch_assoc($result_ticketing_1)) {
-				$date_modified = $row['late_modified'] ? $row['late_modified'] : $row['ticketed_on'];
-				$pax_name = trim($row['fname'] . ' ' . $row['lname']);
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Ticketing',
-					'issue_description' => '[' . $pax_name . '] Date gap exceeds 10 days between travel date and ticketing date (Modified: ' . $date_modified . ')',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-
-		// 1.2 - Ticket number empty but ticketed_on or ticketed_by not empty
-		$query_ticketing_2 = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				pax.ticket_number,
-				pax.ticketed_on,
-				pax.ticketed_by,
-				pax.fname,
-				pax.lname
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.travel_date > CURDATE()
-			AND (pax.ticket_number IS NULL OR pax.ticket_number = '')
-			AND (pax.ticketed_on IS NOT NULL OR pax.ticketed_by IS NOT NULL)
-			LIMIT 100
-		";
-		$result_ticketing_2 = executeQuery($mysqli, $query_ticketing_2, 'Ticketing Query 2', $query_errors);
-		if($result_ticketing_2) {
-			while($row = mysqli_fetch_assoc($result_ticketing_2)) {
-				$issue_fields = array();
-				if($row['ticketed_on']) $issue_fields[] = 'ticketed_on: ' . $row['ticketed_on'];
-				if($row['ticketed_by']) $issue_fields[] = 'ticketed_by: ' . $row['ticketed_by'];
-				$pax_name = trim($row['fname'] . ' ' . $row['lname']);
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Ticketing',
-					'issue_description' => '[' . $pax_name . '] ticket_number is empty but has values in: ' . implode(', ', $issue_fields),
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-
-		// 1.3 - Ticket number not empty but ticketed_on or ticketed_by empty
-		$query_ticketing_3 = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				pax.ticket_number,
-				pax.ticketed_on,
-				pax.ticketed_by,
-				pax.fname,
-				pax.lname
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.travel_date > CURDATE()
-			AND pax.ticket_number IS NOT NULL 
-			AND pax.ticket_number != ''
-			AND (pax.ticketed_on IS NULL OR pax.ticketed_by IS NULL)
-			LIMIT 100
-		";
-		$result_ticketing_3 = executeQuery($mysqli, $query_ticketing_3, 'Ticketing Query 3', $query_errors);
-		if($result_ticketing_3) {
-			while($row = mysqli_fetch_assoc($result_ticketing_3)) {
-				$missing_fields = array();
-				if(!$row['ticketed_on']) $missing_fields[] = 'ticketed_on';
-				if(!$row['ticketed_by']) $missing_fields[] = 'ticketed_by';
-				$pax_name = trim($row['fname'] . ' ' . $row['lname']);
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Ticketing',
-					'issue_description' => '[' . $pax_name . '] ticket_number exists (' . $row['ticket_number'] . ') but missing: ' . implode(', ', $missing_fields),
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-
-		// 1.4 - Pax status not 'Ticketed' but has ticketing info
-		$query_ticketing_4 = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				pax.pax_status,
-				pax.ticket_number,
-				pax.fname,
-				pax.lname
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.travel_date > CURDATE()
-			AND pax.pax_status != 'Ticketed'
-			AND (pax.ticket_number IS NOT NULL OR pax.ticketed_on IS NOT NULL OR pax.ticketed_by IS NOT NULL)
-			LIMIT 100
-		";
-		$result_ticketing_4 = executeQuery($mysqli, $query_ticketing_4, 'Ticketing Query 4', $query_errors);
-		if($result_ticketing_4) {
-			while($row = mysqli_fetch_assoc($result_ticketing_4)) {
-				$pax_name = trim($row['fname'] . ' ' . $row['lname']);
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Ticketing',
-					'issue_description' => '[' . $pax_name . '] pax_status is "' . $row['pax_status'] . '" but should be "Ticketed" (has ticket_number: ' . $row['ticket_number'] . ')',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-
-		// 1.5 - Name updated field empty but has ticketing info
-		$query_ticketing_5 = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				pax.name_updated,
-				pax.fname,
-				pax.lname
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.travel_date > CURDATE()
-			AND (pax.name_updated IS NULL OR pax.name_updated = '')
-			AND (pax.ticket_number IS NOT NULL OR pax.ticketed_on IS NOT NULL OR pax.ticketed_by IS NOT NULL)
-			LIMIT 100
-		";
-		$result_ticketing_5 = executeQuery($mysqli, $query_ticketing_5, 'Ticketing Query 5', $query_errors);
-		if($result_ticketing_5) {
-			while($row = mysqli_fetch_assoc($result_ticketing_5)) {
-				$pax_name = trim($row['fname'] . ' ' . $row['lname']);
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Ticketing',
-					'issue_description' => '[' . $pax_name . '] name_updated field is empty but has ticketing data present',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-
-		// 2. NAME UPDATE ISSUES
-		$query_name_update = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				tb.payment_status,
-				pax.name_update_check,
-				pax.name_update_check_on,
-				pax.fname,
-				pax.lname
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.order_type = 'WPT'
-			AND tb.travel_date > CURDATE()
-			AND tb.payment_status = 'paid'
-			AND tb.trip_code NOT LIKE '%QF%'
-			AND (
-				pax.name_update_check IS NULL 
-				OR pax.name_update_check = '' 
-				OR pax.name_update_check_on IS NULL
-			)
-			LIMIT 100
-		";
-		$result_name_update = executeQuery($mysqli, $query_name_update, 'Name Update Query', $query_errors);
-		if($result_name_update) {
-			while($row = mysqli_fetch_assoc($result_name_update)) {
-				$missing_fields = array();
-				if(!$row['name_update_check']) $missing_fields[] = 'name_update_check';
-				if(!$row['name_update_check_on']) $missing_fields[] = 'name_update_check_on';
-				$pax_name = trim($row['fname'] . ' ' . $row['lname']);
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Name Update',
-					'issue_description' => '[' . $pax_name . '] WPT order with payment_status="' . $row['payment_status'] . '" but missing: ' . implode(', ', $missing_fields),
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-
-		// 3. PNR VALIDATION ISSUES
-		$query_pnr = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				pax.pnr as pax_pnr,
-				(SELECT GROUP_CONCAT(DISTINCT pnr SEPARATOR ', ') 
-				 FROM wpk4_backend_stock_management_sheet 
-				 WHERE trip_id = tb.trip_code AND dep_date = tb.travel_date) as stock_pnrs
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.travel_date > CURDATE()
-			AND (
-				tb.payment_status = 'paid' 
-				OR (tb.payment_status = 'partially_paid' AND tb.order_type = 'WPT')
-			)
-			AND pax.pnr IS NOT NULL
-			AND pax.pnr != ''
-			AND NOT EXISTS (
-				SELECT 1 
-				FROM wpk4_backend_stock_management_sheet sms
-				WHERE sms.trip_id = tb.trip_code 
-				AND sms.dep_date = tb.travel_date
-				AND sms.pnr = pax.pnr
-			)
-			AND EXISTS (
-				SELECT 1 
-				FROM wpk4_backend_stock_management_sheet sms2
-				WHERE sms2.trip_id = tb.trip_code 
-				AND sms2.dep_date = tb.travel_date
-				AND sms2.pnr IS NOT NULL
-				AND sms2.pnr != ''
-			)
-			LIMIT 100
-		";
-		$result_pnr = executeQuery($mysqli, $query_pnr, 'PNR Validation Query', $query_errors);
-		if($result_pnr) {
-			while($row = mysqli_fetch_assoc($result_pnr)) {
-				$stock_pnrs_display = $row['stock_pnrs'] ? $row['stock_pnrs'] : 'None found';
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'PNR Validation',
-					'issue_description' => 'PNR mismatch - Booking PNR: "' . $row['pax_pnr'] . '" not found in Stock Management PNRs: [' . $stock_pnrs_display . ']',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-
-		// 4. PAX COUNT VALIDATION ISSUES
-		$query_pax_count = "
-			SELECT 
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				tb.total_pax,
-				COUNT(
-					CASE 
-						WHEN tb.order_type = 'FIT' AND pax.DOB IS NOT NULL 
-							AND TIMESTAMPDIFF(YEAR, pax.DOB, CURDATE()) < 2 
-						THEN NULL
-						ELSE pax.auto_id 
-					END
-				) as actual_pax_count
-			FROM wpk4_backend_travel_bookings tb
-			LEFT JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.travel_date > CURDATE()
-			AND tb.total_pax > 0
-			GROUP BY tb.order_id, tb.order_type, tb.travel_date, tb.trip_code, tb.total_pax
-			HAVING tb.total_pax != COUNT(
-				CASE 
-					WHEN tb.order_type = 'FIT' AND pax.DOB IS NOT NULL 
-						AND TIMESTAMPDIFF(YEAR, pax.DOB, CURDATE()) < 2 
-					THEN NULL
-					ELSE pax.auto_id 
-				END
-			)
-			LIMIT 100
-		";
-		$result_pax_count = executeQuery($mysqli, $query_pax_count, 'Pax Count Validation Query', $query_errors);
-		if($result_pax_count) {
-			while($row = mysqli_fetch_assoc($result_pax_count)) {
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Pax Count Validation',
-					'issue_description' => 'total_pax field shows ' . $row['total_pax'] . ' but actual pax records count is ' . $row['actual_pax_count'],
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-
-		// 5. PAYMENT ISSUES
-		
-		// 5.1 - Payment exists but ticket number missing
-		$query_payment_1 = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				pax.ticket_number,
-				ph.auto_id as payment_record_id
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_payment_history ph ON tb.order_id = ph.order_id
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.travel_date > CURDATE()
-			AND tb.payment_status = 'paid'
-			AND (pax.ticket_number IS NULL OR pax.ticket_number = '')
-			LIMIT 100
-		";
-		$result_payment_1 = executeQuery($mysqli, $query_payment_1, 'Payment Query 1', $query_errors);
-		if($result_payment_1) {
-			while($row = mysqli_fetch_assoc($result_payment_1)) {
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Payment',
-					'issue_description' => 'Payment record exists (ID: ' . $row['payment_record_id'] . ') but ticket_number field is empty',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
-		
-		// 5.2 - Total amount mismatch with sum of payments received
-		$query_payment_2 = "
-			SELECT 
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				tb.total_amount,
-				SUM(ph.trams_received_amount) as total_paid
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_payment_history ph ON tb.order_id = ph.order_id
-			WHERE tb.travel_date > CURDATE()
-			AND tb.payment_status = 'paid'
-			GROUP BY tb.order_id, tb.order_type, tb.travel_date, tb.trip_code, tb.total_amount
-			HAVING ROUND(tb.total_amount, 2) != ROUND(SUM(ph.trams_received_amount), 2)
-			LIMIT 100
-		";
-		$result_payment_2 = executeQuery($mysqli, $query_payment_2, 'Payment Query 2', $query_errors);
-		if($result_payment_2) {
-			while($row = mysqli_fetch_assoc($result_payment_2)) {
-				$difference = round($row['total_amount'], 2) - round($row['total_paid'], 2);
-				// Only add if difference is actually significant (not just floating point error)
-				if(abs($difference) >= 0.01) {
-					$status = $difference > 0 ? 'Underpaid' : 'Overpaid';
-					$all_issues[] = array(
-						'order_id' => $row['order_id'],
-						'order_type' => $row['order_type'],
-						'category' => 'Payment',
-						'issue_description' => 'total_amount (' . number_format($row['total_amount'], 2) . ') != sum of payments (' . number_format($row['total_paid'], 2) . ') - ' . $status . ' by ' . number_format(abs($difference), 2),
-						'travel_date' => $row['travel_date'],
-						'priority' => getPriority($row['travel_date']),
-						'details' => 'Trip: ' . $row['trip_code']
-					);
+		if(!function_exists('issue_flag_api_request')) {
+			function issue_flag_api_request($endpoint, $method = 'GET', $params = array()) {
+				if (!defined('API_BASE_URL')) {
+					return new WP_Error('api_base_url_missing', 'API_BASE_URL is not defined');
 				}
-			}
-		}
 
-		// 6. GDS TICKETING ISSUES
-		
-		// 6.1 - GDS paid orders older than 24 hours without ticket number
-		$query_gds_1 = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				tb.order_date,
-				pax.ticket_number,
-				pax.fname,
-				pax.lname
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_pax pax ON tb.order_id = pax.order_id AND tb.product_id = pax.product_id
-			WHERE tb.travel_date > CURDATE()
-			AND tb.order_type = 'gds'
-			AND tb.payment_status = 'paid'
-			AND tb.order_date < DATE_SUB(NOW(), INTERVAL 24 HOUR)
-			AND (pax.ticket_number IS NULL OR pax.ticket_number = '')
-			LIMIT 100
-		";
-		$result_gds_1 = executeQuery($mysqli, $query_gds_1, 'GDS Query 1', $query_errors);
-		if($result_gds_1) {
-			while($row = mysqli_fetch_assoc($result_gds_1)) {
-				$hours_since_order = round((strtotime(date('Y-m-d H:i:s')) - strtotime($row['order_date'])) / 3600);
-				$pax_name = trim($row['fname'] . ' ' . $row['lname']);
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'GDS Ticketing',
-					'issue_description' => '[' . $pax_name . '] GDS order paid but ticket_number empty (Order placed ' . $hours_since_order . ' hours ago on ' . $row['order_date'] . ')',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
+				$url = rtrim(API_BASE_URL, '/') . $endpoint;
+				$args = array(
+					'timeout' => 60,
+					'headers' => array(
+						'Accept' => 'application/json',
+					),
 				);
+
+				$filtered = array_filter($params, function($value) {
+					return $value !== '' && $value !== null;
+				});
+
+				if (strtoupper($method) === 'GET') {
+					if (!empty($filtered)) {
+						$url .= '?' . http_build_query($filtered);
+					}
+					return wp_remote_get($url, $args);
+				}
+
+				$args['body'] = $filtered;
+				return wp_remote_post($url, $args);
 			}
 		}
 
-		// 7. PAYMENT STATUS MISMATCH
-		
-		// 7.1 - Payment received but status not paid/refund
-		$query_payment_status = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				tb.payment_status,
-				SUM(ph.trams_received_amount) as total_received
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_payment_history ph ON tb.order_id = ph.order_id
-			WHERE tb.travel_date > CURDATE()
-			AND tb.payment_status NOT IN ('paid', 'refund')
-			GROUP BY tb.order_id, tb.order_type, tb.travel_date, tb.trip_code, tb.payment_status
-			HAVING SUM(ph.trams_received_amount) > 0
-			LIMIT 100
-		";
-		$result_payment_status = executeQuery($mysqli, $query_payment_status, 'Payment Status Query', $query_errors);
-		if($result_payment_status) {
-			while($row = mysqli_fetch_assoc($result_payment_status)) {
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Payment Status',
-					'issue_description' => 'payment_status is "' . $row['payment_status'] . '" but received payment amount: ' . number_format($row['total_received'], 2),
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
+		$filters = array(
+			'order_id' => isset($_GET['order_id']) ? sanitize_text_field($_GET['order_id']) : '',
+			'order_type' => isset($_GET['order_type']) ? sanitize_text_field($_GET['order_type']) : '',
+			'category' => isset($_GET['category']) ? sanitize_text_field($_GET['category']) : '',
+			'priority' => isset($_GET['priority']) ? sanitize_text_field($_GET['priority']) : '',
+		);
+
+		$api_response = issue_flag_api_request('/issues/flag-dashboard', 'GET', $filters);
+
+		if (is_wp_error($api_response)) {
+			$api_error = $api_response->get_error_message();
+		} else {
+			$body = json_decode(wp_remote_retrieve_body($api_response), true);
+			if (!is_array($body) || ($body['status'] ?? '') !== 'success') {
+				$api_error = isset($body['message']) ? $body['message'] : 'Unable to fetch issue data from API.';
+			} else {
+				$data = $body['data'] ?? array();
+				$all_issues = $data['issues'] ?? array();
+				$query_errors = $data['query_errors'] ?? array();
+				$stats = array_merge($stats, $data['stats'] ?? array());
 			}
 		}
 
-		// 8. DUPLICATE ORDER VALIDATION
-		
-		// 8.1 - Duplicate GDS orders (2 or more records)
-		$query_duplicate_gds = "
-			SELECT 
-				order_id,
-				order_type,
-				MIN(travel_date) as travel_date,
-				MIN(trip_code) as trip_code,
-				COUNT(*) as record_count
-			FROM wpk4_backend_travel_bookings
-			WHERE travel_date > CURDATE()
-			AND order_type = 'gds'
-			GROUP BY order_id, order_type
-			HAVING COUNT(*) >= 2
-			LIMIT 100
-		";
-		$result_duplicate_gds = executeQuery($mysqli, $query_duplicate_gds, 'Duplicate GDS Query', $query_errors);
-		if($result_duplicate_gds) {
-			while($row = mysqli_fetch_assoc($result_duplicate_gds)) {
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Duplicate Order',
-					'issue_description' => 'GDS order has ' . $row['record_count'] . ' duplicate records in bookings table',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
+		// Use API filters result directly
+		$filtered_issues = $all_issues;
+
+		// Calculate statistics fallback if API did not include them
+		if (empty($stats) || !isset($stats['total'])) {
+			$stats = array(
+				'total' => count($filtered_issues),
+				'd1' => count(array_filter($filtered_issues, function($i) { return isset($i['priority']) && $i['priority'] === 'D-1'; })),
+				'd7' => count(array_filter($filtered_issues, function($i) { return isset($i['priority']) && $i['priority'] === 'D-7'; })),
+				'd10' => count(array_filter($filtered_issues, function($i) { return isset($i['priority']) && $i['priority'] === 'D-10'; })),
+			);
 		}
 
-		// 8.2 - Duplicate WPT orders (more than 2 records)
-		$query_duplicate_wpt = "
-			SELECT 
-				order_id,
-				order_type,
-				MIN(travel_date) as travel_date,
-				MIN(trip_code) as trip_code,
-				COUNT(*) as record_count
-			FROM wpk4_backend_travel_bookings
-			WHERE travel_date > CURDATE()
-			AND order_type = 'WPT'
-			GROUP BY order_id, order_type
-			HAVING COUNT(*) > 2
-			LIMIT 100
-		";
-		$result_duplicate_wpt = executeQuery($mysqli, $query_duplicate_wpt, 'Duplicate WPT Query', $query_errors);
-		if($result_duplicate_wpt) {
-			while($row = mysqli_fetch_assoc($result_duplicate_wpt)) {
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Duplicate Order',
-					'issue_description' => 'WPT order has ' . $row['record_count'] . ' records (exceeds limit of 2) in bookings table',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code']
-				);
-			}
-		}
+		$total_issues = $stats['total'];
+		$d1_count = $stats['d1'];
+		$d7_count = $stats['d7'];
+		$d10_count = $stats['d10'];
 
-		// 9. BOOKING NOTES - WITHIN 7 DAYS
-		
-		// 9.1 - Bookings with notes in next 7 days
-		$query_booking_notes = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				hou.meta_value as note_content,
-				hou.updated_on as note_date
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_history_of_updates hou ON tb.order_id = hou.type_id
-			WHERE tb.travel_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-			AND hou.meta_key = 'Booking Note Category'
-			LIMIT 100
-		";
-		$result_booking_notes = executeQuery($mysqli, $query_booking_notes, 'Booking Notes Query', $query_errors);
-		if($result_booking_notes) {
-			while($row = mysqli_fetch_assoc($result_booking_notes)) {
-				$days_until_travel = round((strtotime($row['travel_date']) - strtotime(date('Y-m-d'))) / 86400);
-				$note_date = $row['note_date'] ? $row['note_date'] : 'N/A';
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Booking Notes',
-					'issue_description' => 'Booking has notes (Travel in ' . $days_until_travel . ' days) - Note: ' . substr($row['note_content'], 0, 100) . (strlen($row['note_content']) > 100 ? '...' : ''),
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code'] . ', Note Date: ' . $note_date
-				);
-			}
+		if ($api_error) {
+			echo '<div style="background:#f8d7da;color:#842029;padding:15px;margin:20px 0;border-radius:5px;"><strong>⚠ API Error:</strong> ' . esc_html($api_error) . '</div>';
 		}
-
-		// 10. ACTIVE ISSUE LOGS
-		
-		// 10.1 - Paid bookings with active issue logs
-		$query_active_issues = "
-			SELECT DISTINCT
-				tb.order_id,
-				tb.order_type,
-				tb.travel_date,
-				tb.trip_code,
-				tb.payment_status,
-				til.auto_id as issue_log_id,
-				til.added_on as issue_created
-			FROM wpk4_backend_travel_bookings tb
-			INNER JOIN wpk4_backend_travel_booking_issue_log til ON tb.order_id = til.order_id
-			WHERE tb.travel_date > CURDATE()
-			AND tb.payment_status = 'paid'
-			AND til.status = 'active'
-			LIMIT 100
-		";
-		$result_active_issues = executeQuery($mysqli, $query_active_issues, 'Active Issue Logs Query', $query_errors);
-		if($result_active_issues) {
-			while($row = mysqli_fetch_assoc($result_active_issues)) {
-				$issue_created = $row['issue_created'] ? $row['issue_created'] : 'N/A';
-				$all_issues[] = array(
-					'order_id' => $row['order_id'],
-					'order_type' => $row['order_type'],
-					'category' => 'Active Issue Log',
-					'issue_description' => 'Paid booking has active issue log (Log ID: ' . $row['issue_log_id'] . ')',
-					'travel_date' => $row['travel_date'],
-					'priority' => getPriority($row['travel_date']),
-					'details' => 'Trip: ' . $row['trip_code'] . ', Issue Created: ' . $issue_created
-				);
-			}
-		}
-
-		// Display query errors if any
+		// Display query errors from API if any
 		if(!empty($query_errors)) {
 			echo '<div style="background:#f8d7da;color:#842029;padding:15px;margin:20px 0;border-radius:5px;">';
 			echo '<strong>⚠ Database Query Errors:</strong><br><br>';
@@ -823,40 +266,6 @@ if(mysqli_num_rows($result_ip_selection) > 0 )
 			}
 			echo '</div>';
 		}
-
-		// Apply filters
-		$filtered_issues = $all_issues;
-		
-		if(isset($_GET['order_id']) && $_GET['order_id'] != '') {
-			$search_order_id = $_GET['order_id'];
-			$filtered_issues = array_filter($filtered_issues, function($issue) use ($search_order_id) {
-				return stripos($issue['order_id'], $search_order_id) !== false;
-			});
-		}
-		
-		if(isset($_GET['order_type']) && $_GET['order_type'] != '') {
-			$filtered_issues = array_filter($filtered_issues, function($issue) {
-				return $issue['order_type'] == $_GET['order_type'];
-			});
-		}
-		
-		if(isset($_GET['category']) && $_GET['category'] != '') {
-			$filtered_issues = array_filter($filtered_issues, function($issue) {
-				return $issue['category'] == $_GET['category'];
-			});
-		}
-		
-		if(isset($_GET['priority']) && $_GET['priority'] != '') {
-			$filtered_issues = array_filter($filtered_issues, function($issue) {
-				return $issue['priority'] == $_GET['priority'];
-			});
-		}
-
-		// Calculate statistics
-		$total_issues = count($filtered_issues);
-		$d1_count = count(array_filter($filtered_issues, function($i) { return $i['priority'] == 'D-1'; }));
-		$d7_count = count(array_filter($filtered_issues, function($i) { return $i['priority'] == 'D-7'; }));
-		$d10_count = count(array_filter($filtered_issues, function($i) { return $i['priority'] == 'D-10'; }));
 		?>
 
 		<div class="stats">

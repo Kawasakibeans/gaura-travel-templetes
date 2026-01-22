@@ -3,84 +3,216 @@
  * Template Name: Date Change Dashboard
  * Template Post Type: post, page
  */
+// Start output buffering to prevent headers already sent errors
+if (!ob_get_level()) {
+    ob_start();
+}
+
+// Suppress error display until after headers are sent (errors will still be logged)
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+error_reporting(E_ALL);
+
 // --------------------------
 // CONFIGURATION
 // --------------------------
-require_once(dirname(__FILE__, 5) . '/wp-config.php');
+// WordPress should already be loaded when this template is called
+// Only load if absolutely necessary
+if (!defined('ABSPATH')) {
+    $wp_load_path = dirname(__FILE__, 5) . '/wp-load.php';
+    if (file_exists($wp_load_path)) {
+        require_once($wp_load_path);
+    } else {
+        // Try alternative path
+        $wp_load_path_alt = dirname(__FILE__, 4) . '/wp-load.php';
+        if (file_exists($wp_load_path_alt)) {
+            require_once($wp_load_path_alt);
+        }
+    }
+}
 
-// Connect DB
-$mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-if ($mysqli->connect_errno) die("MySQL Connection Failed: " . $mysqli->connect_error);
+// Define API base URL if not already defined
+if (!defined('API_BASE_URL')) {
+    define('API_BASE_URL', 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1');
+}
+
+// Helper function to safely get page ID
+function safe_get_page_id() {
+    if (function_exists('get_the_ID')) {
+        return get_the_ID();
+    }
+    // Fallback to GET parameter or default
+    return isset($_GET['page_id']) ? intval($_GET['page_id']) : 0;
+}
+
+// ============================================================================
+// OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+// ============================================================================
+// // Connect DB
+// $mysqli = new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+// if ($mysqli->connect_errno) die("MySQL Connection Failed: " . $mysqli->connect_error);
+// ============================================================================
 
 // Input Sanitize
-function clean($s) { return htmlspecialchars(trim($s ?? ''), ENT_QUOTES, 'UTF-8'); }
+// function clean($s) { 
+//     if ($s === null) return '';
+//     return htmlspecialchars(trim((string)$s), ENT_QUOTES, 'UTF-8'); 
+// }
 
-// Get input
-$from_date = clean($_GET['from_date'] ?? '');
-$to_date   = clean($_GET['to_date'] ?? '');
-$current_filter = clean($_GET['filter'] ?? '');
+// Get input with error handling
+try {
+    $from_date = clean($_GET['from_date'] ?? '');
+    $to_date   = clean($_GET['to_date'] ?? '');
+    $current_filter = clean($_GET['filter'] ?? '');
+    // Fix for undefined $selected_date variable
+    $selected_date = $from_date ?: $to_date ?: date('Y-m-d');
+} catch (Exception $e) {
+    error_log("Error processing input parameters: " . $e->getMessage());
+    $from_date = '';
+    $to_date = '';
+    $current_filter = '';
+    $selected_date = date('Y-m-d');
+}
 
 $processed_requests = [];
 $monthly_summary = [];
 $date_summary = [];
 $agent_summary = [];
 $show_kpis = false;
+$responseData = null; // Initialize to prevent undefined variable errors
 
-// MAIN DATA QUERY
+// MAIN DATA QUERY - Wrap in try-catch to prevent fatal errors
+try {
 if ($from_date || $to_date) {
-    $where = "r.case_type = 'datechange'";
-    if ($from_date && $to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) BETWEEN '$from_date' AND '$to_date'";
-    else if ($from_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) >= '$from_date'";
-    else if ($to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) <= '$to_date'";
-
-    $query = "
-        SELECT 
-            r.case_id, r.reservation_ref, r.status, r.case_date, r.last_response_on, r.updated_by,
-            b.order_id, b.order_type, b.travel_date, b.product_title, b.total_pax, b.trip_code,
-            orig_b.total_amount, cp.amount as cost_taken_amount
-        FROM wpk4_backend_user_portal_requests r
-        LEFT JOIN wpk4_backend_travel_bookings b ON r.reservation_ref = b.order_id
-        LEFT JOIN wpk4_backend_travel_bookings orig_b ON r.reservation_ref = orig_b.previous_order_id
-        LEFT JOIN wpk4_backend_travel_booking_custom_payments cp ON r.reservation_ref = cp.order_id AND cp.type_of_payment = 'Date Change' AND cp.status = 'paid'
-        WHERE $where
-        ORDER BY STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s') ASC
-    ";
-
-    $res = $mysqli->query($query);
+    // ============================================================================
+    // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+    // ============================================================================
+    // $where = "r.case_type = 'datechange'";
+    // if ($from_date && $to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) BETWEEN '$from_date' AND '$to_date'";
+    // else if ($from_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) >= '$from_date'";
+    // else if ($to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) <= '$to_date'";
+    // 
+    // $query = "
+    //     SELECT 
+    //         r.case_id, r.reservation_ref, r.status, r.case_date, r.last_response_on, r.updated_by,
+    //         b.order_id, b.order_type, b.travel_date, b.product_title, b.total_pax, b.trip_code,
+    //         orig_b.total_amount, cp.amount as cost_taken_amount
+    //     FROM wpk4_backend_user_portal_requests r
+    //     LEFT JOIN wpk4_backend_travel_bookings b ON r.reservation_ref = b.order_id
+    //     LEFT JOIN wpk4_backend_travel_bookings orig_b ON r.reservation_ref = orig_b.previous_order_id
+    //     LEFT JOIN wpk4_backend_travel_booking_custom_payments cp ON r.reservation_ref = cp.order_id AND cp.type_of_payment = 'Date Change' AND cp.status = 'paid'
+    //     WHERE $where
+    //     ORDER BY STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s') ASC
+    // ";
+    // 
+    // $res = $mysqli->query($query);
+    // $all_requests = [];
+    // while ($row = $res->fetch_assoc()) $all_requests[] = $row;
+    // 
+    // // Fetch transaction sums per reservation_ref
+    // $reservation_refs = array_column($all_requests, 'reservation_ref');
+    // $transaction_map = [];
+    // if ($reservation_refs) {
+    //     $in = implode("','", array_map([$mysqli, 'real_escape_string'], $reservation_refs));
+    //     $tq = "
+    //         SELECT order_id, SUM(transaction_amount) as transaction_sum
+    //         FROM wpk4_backend_travel_booking_ticket_number
+    //         WHERE order_id IN ('$in') AND reason = 'Datechange'
+    //         GROUP BY order_id
+    //     ";
+    //     $tres = $mysqli->query($tq);
+    //     while ($r = $tres->fetch_assoc()) $transaction_map[$r['order_id']] = floatval($r['transaction_sum']);
+    // }
+    // ============================================================================
+    
+    // Fetch data from API
+    $api_url = API_BASE_URL;
+    $url = API_BASE_URL . '/date-change-request';
+    $params = [];
+    if (!empty($from_date)) {
+        $params['from'] = $from_date;
+    }
+    if (!empty($to_date)) {
+        $params['to'] = $to_date;
+    }
+    if (!empty($params)) {
+        $url .= '?' . http_build_query($params);
+    }
+    
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 30, // Add timeout instead of 0
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'GET',
+    ));
+    
+    $response = curl_exec($curl);
+    $curl_error = curl_error($curl);
+    $http_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+    
+    // Add error handling for API calls
+    $responseData = null;
     $all_requests = [];
-    while ($row = $res->fetch_assoc()) $all_requests[] = $row;
-
-    // Fetch transaction sums per reservation_ref
-    $reservation_refs = array_column($all_requests, 'reservation_ref');
+    
+    if ($curl_error) {
+        error_log("cURL error in date change request: " . $curl_error);
+    } elseif ($http_code !== 200) {
+        error_log("API returned HTTP code: " . $http_code . " for URL: " . $url);
+    } else {
+        $responseData = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("JSON decode error: " . json_last_error_msg() . " for response: " . substr($response, 0, 200));
+        } elseif (isset($responseData['status']) && $responseData['status'] === 'success') {
+            if (isset($responseData['data']['requests'])) {
+                $all_requests = $responseData['data']['requests'];
+            } elseif (isset($responseData['requests'])) {
+                $all_requests = $responseData['requests'];
+            }
+        }
+    }
+    
+    // Build transaction map from API response (if provided)
     $transaction_map = [];
-    if ($reservation_refs) {
-        $in = implode("','", array_map([$mysqli, 'real_escape_string'], $reservation_refs));
-        $tq = "
-            SELECT order_id, SUM(transaction_amount) as transaction_sum
-            FROM wpk4_backend_travel_booking_ticket_number
-            WHERE order_id IN ('$in') AND reason = 'Datechange'
-            GROUP BY order_id
-        ";
-        $tres = $mysqli->query($tq);
-        while ($r = $tres->fetch_assoc()) $transaction_map[$r['order_id']] = floatval($r['transaction_sum']);
+    if (!empty($all_requests)) {
+        foreach ($all_requests as $request) {
+            $reservation_ref = $request['reservation_ref'] ?? $request['pnr'] ?? '';
+            if (!empty($reservation_ref)) {
+                // Prefer explicit transaction_sum field; fallback to 0
+                $transaction_map[$reservation_ref] = $request['transaction_sum'] ?? 0;
+            }
+        }
     }
 
     foreach ($all_requests as $request) {
-        $ref = $request['reservation_ref'];
+        $ref = $request['reservation_ref'] ?? $request['pnr'] ?? '';
         $transaction_sum = $transaction_map[$ref] ?? 0;
+
         $airline = '';
         if (!empty($request['trip_code']) && strlen($request['trip_code']) >= 10) {
             $airline = substr($request['trip_code'], 8, 2);
         }
+
         $case_date = '';
         if (!empty($request['case_date'])) {
             $d = DateTime::createFromFormat('Y-m-d H:i:s', $request['case_date']);
             if ($d) $case_date = $d->format('d/m/Y');
         }
+
         $travel_date = !empty($request['travel_date']) ? date('d/m/Y', strtotime($request['travel_date'])) : '';
         $last_response_on = !empty($request['last_response_on']) ? date('d/m/Y', strtotime($request['last_response_on'])) : '';
-        $cost_taken = ($request['status'] === 'success') ? ($request['cost_taken_amount'] ?? 0) : 0;
-        $total_revenue = ($request['status'] === 'success') ? ($cost_taken - $transaction_sum) : 0;
+
+        // Map cost fields following旧逻辑：cost_given=total_amount; cost_taken=cost_taken_amount; revenue=cost_taken - transaction_sum（仅成功）
+        $cost_given = $request['cost_given'] ?? $request['total_amount'] ?? 0;
+        $cost_taken_raw = $request['cost_taken'] ?? $request['cost_taken_amount'] ?? 0;
+        $status = strtolower($request['status'] ?? '');
+        $cost_taken = ($status === 'success') ? $cost_taken_raw : 0;
+        $total_revenue = ($status === 'success') ? ($request['total_revenue'] ?? ($cost_taken - $transaction_sum)) : 0;
 
         $processed_requests[] = [
             'query_date' => $case_date,
@@ -92,7 +224,7 @@ if ($from_date || $to_date) {
             'airline' => $airline,
             'booking_type' => (isset($request['order_type']) && strtolower($request['order_type']) === 'gds') ? 'FIT' : 'GDeals',
             'old_travel_date' => $travel_date,
-            'cost_given' => $request['total_amount'] ?? 0,
+            'cost_given' => $cost_given,
             'cost_taken' => $cost_taken,
             'total_revenue' => $total_revenue,
             'status' => $request['status'] ?? '',
@@ -105,65 +237,162 @@ if ($from_date || $to_date) {
 // SUMMARY QUERIES (monthly, daily, agent)...
 // Monthly
 if ($from_date || $to_date) {
-    $where = "r.case_type = 'datechange'";
-    if ($from_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) >= '$from_date'";
-    if ($to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) <= '$to_date'";
-    $q = "
-        SELECT 
-            YEAR(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) as year,
-            MONTH(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) as month,
-            SUM(CASE WHEN LOWER(b.order_type) = 'gds' THEN 1 ELSE 0 END) as fit_count,
-            SUM(CASE WHEN LOWER(b.order_type) != 'gds' OR b.order_type IS NULL THEN 1 ELSE 0 END) as gdeals_count,
-            COUNT(*) as total_count
-        FROM wpk4_backend_user_portal_requests r
-        LEFT JOIN wpk4_backend_travel_bookings b ON r.reservation_ref = b.order_id
-        WHERE $where
-        GROUP BY year, month
-        ORDER BY year DESC, month DESC
-    ";
-    $res = $mysqli->query($q);
-    while ($r = $res->fetch_assoc()) $monthly_summary[] = $r;
+    // ============================================================================
+    // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+    // ============================================================================
+    // $where = "r.case_type = 'datechange'";
+    // if ($from_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) >= '$from_date'";
+    // if ($to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) <= '$to_date'";
+    // $q = "
+    //     SELECT 
+    //         YEAR(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) as year,
+    //         MONTH(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) as month,
+    //         SUM(CASE WHEN LOWER(b.order_type) = 'gds' THEN 1 ELSE 0 END) as fit_count,
+    //         SUM(CASE WHEN LOWER(b.order_type) != 'gds' OR b.order_type IS NULL THEN 1 ELSE 0 END) as gdeals_count,
+    //         COUNT(*) as total_count
+    //     FROM wpk4_backend_user_portal_requests r
+    //     LEFT JOIN wpk4_backend_travel_bookings b ON r.reservation_ref = b.order_id
+    //     WHERE $where
+    //     GROUP BY year, month
+    //     ORDER BY year DESC, month DESC
+    // ";
+    // $res = $mysqli->query($q);
+    // while ($r = $res->fetch_assoc()) $monthly_summary[] = $r;
+    // ============================================================================
+    
+    // Get monthly summary from API response (should be included in the main API call)
+    if (isset($responseData['status']) && $responseData['status'] === 'success') {
+        if (isset($responseData['data']['monthly_summary'])) {
+            $monthly_summary = $responseData['data']['monthly_summary'];
+        } elseif (isset($responseData['monthly_summary'])) {
+            $monthly_summary = $responseData['monthly_summary'];
+        }
+    }
 }
 // Daily
 if ($from_date || $to_date) {
-    $where = "r.case_type = 'datechange'";
-    if ($from_date && $to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) BETWEEN '$from_date' AND '$to_date'";
-    else if ($from_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) >= '$from_date'";
-    else if ($to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) <= '$to_date'";
-    $q = "
-        SELECT 
-            DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) as case_date,
-            SUM(CASE WHEN LOWER(b.order_type) = 'gds' AND r.status = 'open' THEN 1 ELSE 0 END) as fit_pending_count,
-            SUM(CASE WHEN LOWER(b.order_type) = 'gds' AND (r.status = 'success' OR r.status = 'fail') THEN 1 ELSE 0 END) as fit_close_count,
-            SUM(CASE WHEN (LOWER(b.order_type) != 'gds' OR b.order_type IS NULL) AND r.status = 'open' THEN 1 ELSE 0 END) as gdeals_pending_count,
-            SUM(CASE WHEN (LOWER(b.order_type) != 'gds' OR b.order_type IS NULL) AND (r.status = 'success' OR r.status = 'fail') THEN 1 ELSE 0 END) as gdeals_close_count,
-            COUNT(*) as total_count
-        FROM wpk4_backend_user_portal_requests r
-        LEFT JOIN wpk4_backend_travel_bookings b ON r.reservation_ref = b.order_id
-        WHERE $where
-        GROUP BY case_date
-        ORDER BY case_date DESC
-    ";
-    $res = $mysqli->query($q);
-    while ($r = $res->fetch_assoc()) $date_summary[] = $r;
-}
-// Agent
-foreach ($processed_requests as $req) {
-    $agent = $req['agent'] ?: 'Unknown';
-    if (!isset($agent_summary[$agent])) $agent_summary[$agent] = ['agent' => $agent, 'total_cases' => 0, 'success_cases' => 0, 'total_revenue' => 0];
-    $agent_summary[$agent]['total_cases'] += 1;
-    if (strtolower($req['status']) === 'success') {
-        $agent_summary[$agent]['success_cases'] += 1;
-        $agent_summary[$agent]['total_revenue'] += floatval($req['total_revenue']);
+    // ============================================================================
+    // OLD DATABASE CODE - COMMENTED OUT (Can be reverted if API endpoints fail)
+    // ============================================================================
+    // $where = "r.case_type = 'datechange'";
+    // if ($from_date && $to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) BETWEEN '$from_date' AND '$to_date'";
+    // else if ($from_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) >= '$from_date'";
+    // else if ($to_date) $where .= " AND DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) <= '$to_date'";
+    // $q = "
+    //     SELECT 
+    //         DATE(STR_TO_DATE(r.case_date, '%Y-%m-%d %H:%i:%s')) as case_date,
+    //         SUM(CASE WHEN LOWER(b.order_type) = 'gds' AND r.status = 'open' THEN 1 ELSE 0 END) as fit_pending_count,
+    //         SUM(CASE WHEN LOWER(b.order_type) = 'gds' AND (r.status = 'success' OR r.status = 'fail') THEN 1 ELSE 0 END) as fit_close_count,
+    //         SUM(CASE WHEN (LOWER(b.order_type) != 'gds' OR b.order_type IS NULL) AND r.status = 'open' THEN 1 ELSE 0 END) as gdeals_pending_count,
+    //         SUM(CASE WHEN (LOWER(b.order_type) != 'gds' OR b.order_type IS NULL) AND (r.status = 'success' OR r.status = 'fail') THEN 1 ELSE 0 END) as gdeals_close_count,
+    //         COUNT(*) as total_count
+    //     FROM wpk4_backend_user_portal_requests r
+    //     LEFT JOIN wpk4_backend_travel_bookings b ON r.reservation_ref = b.order_id
+    //     WHERE $where
+    //     GROUP BY case_date
+    //     ORDER BY case_date DESC
+    // ";
+    // $res = $mysqli->query($q);
+    // while ($r = $res->fetch_assoc()) $date_summary[] = $r;
+    // ============================================================================
+    
+    // Fetch daily summary from API
+    $api_url = API_BASE_URL;
+    $url = API_BASE_URL . '/date-change-request-dashboard/daily-summary';
+    $params = [];
+    if (!empty($from_date)) {
+        $params['from'] = $from_date;
     }
+    if (!empty($to_date)) {
+        $params['to'] = $to_date;
+    }
+    if (!empty($params)) {
+        $url .= '?' . http_build_query($params);
+    }
+    
+    $curl_daily = curl_init();
+    curl_setopt_array($curl_daily, array(
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        // CURLOPT_TIMEOUT => 30, // Add timeout instead of 0
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'GET',
+    ));
+    
+    $response_daily = curl_exec($curl_daily);
+    $curl_error_daily = curl_error($curl_daily);
+    $http_code_daily = curl_getinfo($curl_daily, CURLINFO_HTTP_CODE);
+    curl_close($curl_daily);
+    
+    // Add error handling for daily summary API call
+    $responseData_daily = null;
+    $date_summary = [];
+    
+    if ($curl_error_daily) {
+        error_log("cURL error in daily summary request: " . $curl_error_daily);
+    } elseif ($http_code_daily !== 200) {
+        error_log("Daily summary API returned HTTP code: " . $http_code_daily);
+    } else {
+        $responseData_daily = json_decode($response_daily, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log("JSON decode error for daily summary: " . json_last_error_msg());
+        } elseif (isset($responseData_daily['status']) && $responseData_daily['status'] === 'success') {
+            if (isset($responseData_daily['data'])) {
+                $date_summary = is_array($responseData_daily['data']) ? $responseData_daily['data'] : [];
+            }
+        }
+    }
+    echo print_r($responseData_daily);
+
+    // Agent summary processing
+    foreach ($processed_requests as $req) {
+        $agent = $req['agent'] ?? 'Unknown';
+        if (!isset($agent_summary[$agent])) {
+            $agent_summary[$agent] = ['agent' => $agent, 'total_cases' => 0, 'success_cases' => 0, 'total_revenue' => 0];
+        }
+        $agent_summary[$agent]['total_cases'] += 1;
+        if (strtolower($req['status'] ?? '') === 'success') {
+            $agent_summary[$agent]['success_cases'] += 1;
+            $agent_summary[$agent]['total_revenue'] += floatval($req['total_revenue'] ?? 0);
+        }
+    }
+    foreach ($agent_summary as &$a) {
+        $a['success_percent'] = $a['total_cases'] > 0 ? round($a['success_cases'] / $a['total_cases'] * 100, 1) : 0;
+    }
+    unset($a);
 }
-foreach ($agent_summary as &$a) $a['success_percent'] = $a['total_cases'] > 0 ? round($a['success_cases'] / $a['total_cases'] * 100, 1) : 0;
-unset($a);
+
+} catch (Exception $e) {
+    // Log the error but don't crash the page
+    error_log("Critical error in date change request details: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
+    error_log("Stack trace: " . $e->getTraceAsString());
+    // Set defaults to prevent undefined variable errors
+    $processed_requests = [];
+    $monthly_summary = [];
+    $date_summary = [];
+    $agent_summary = [];
+    $show_kpis = false;
+}
 
 $month_names = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
 
 // ADD THIS LINE before HTML output:
 $filtered_data = $processed_requests;
+
+// Clean any accidental output before HTML
+if (ob_get_level() > 0) {
+    $buffer = ob_get_contents();
+    if (trim($buffer) !== '') {
+        error_log('Unexpected output before HTML in tpl_backend_date_change_request_details.php: ' . substr($buffer, 0, 200));
+    }
+    ob_clean();
+}
+
+// Re-enable error display after headers should be sent
+ini_set('display_errors', 1);
 ?>
 <!DOCTYPE html>
 <html>
@@ -325,7 +554,7 @@ body { background: #f8f9fa; }
 <!-- Single, deduped Date Range Filter Form at the Top -->
 <div class="date-filter-container">
     <form method="get" action="" class="date-filter-form">
-        <input type="hidden" name="page_id" value="<?php echo get_the_ID(); ?>">
+        <input type="hidden" name="page_id" value="<?php echo safe_get_page_id(); ?>">
         <div class="form-group">
             <label for="from-date">From Date:</label>
             <input type="text" id="from-date" name="from_date" class="date-picker" 
@@ -338,7 +567,7 @@ body { background: #f8f9fa; }
         </div>
         <button type="submit" class="primary-button">Load Data</button>
         <?php if (!empty($from_date) || !empty($to_date)): ?>
-            <a href="?page_id=<?php echo get_the_ID(); ?>" class="secondary-button">Clear Filter</a>
+            <a href="?page_id=<?php echo safe_get_page_id(); ?>" class="secondary-button">Clear Filter</a>
         <?php endif; ?>
     </form>
 </div>
@@ -366,7 +595,7 @@ body { background: #f8f9fa; }
             <div class="kpi-grid">
                 <!-- Total Date Changes -->
                 <div class="kpi-card date-change-card <?php echo $current_filter === 'total_date_changes' ? 'active' : ''; ?>">
-                    <a href="?page_id=<?php echo get_the_ID(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=total_date_changes" class="kpi-link" data-filter="total_date_changes">
+                    <a href="?page_id=<?php echo safe_get_page_id(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=total_date_changes" class="kpi-link" data-filter="total_date_changes">
                         <div class="kpi-icon">
                             <span class="kpi-emoji">🔄</span>
                         </div>
@@ -379,7 +608,7 @@ body { background: #f8f9fa; }
 
                 <!-- Success -->
                 <div class="kpi-card success-card <?php echo $current_filter === 'status_success' ? 'active' : ''; ?>">
-                    <a href="?page_id=<?php echo get_the_ID(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=status_success" class="kpi-link" data-filter="status_success">
+                    <a href="?page_id=<?php echo safe_get_page_id(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=status_success" class="kpi-link" data-filter="status_success">
                         <div class="kpi-icon">
                             <span class="kpi-emoji">✅</span>
                         </div>
@@ -405,7 +634,7 @@ body { background: #f8f9fa; }
                 
                 <!-- Failure -->
                 <div class="kpi-card failure-card <?php echo $current_filter === 'status_failure' ? 'active' : ''; ?>">
-                    <a href="?page_id=<?php echo get_the_ID(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=status_failure" class="kpi-link" data-filter="status_failure">
+                    <a href="?page_id=<?php echo safe_get_page_id(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=status_failure" class="kpi-link" data-filter="status_failure">
                         <div class="kpi-icon">
                             <span class="kpi-emoji">❌</span>
                         </div>
@@ -431,7 +660,7 @@ body { background: #f8f9fa; }
                 
                 <!-- In Progress -->
                 <div class="kpi-card progress-card <?php echo $current_filter === 'status_in_progress' ? 'active' : ''; ?>">
-                    <a href="?page_id=<?php echo get_the_ID(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=status_in_progress" class="kpi-link" data-filter="status_in_progress">
+                    <a href="?page_id=<?php echo safe_get_page_id(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=status_in_progress" class="kpi-link" data-filter="status_in_progress">
                         <div class="kpi-icon">
                             <span class="kpi-emoji">⏳</span>
                         </div>
@@ -457,7 +686,7 @@ body { background: #f8f9fa; }
 
                 <!-- Total Cost Given -->
                 <div class="kpi-card cost-card <?php echo $current_filter === 'total_cost_given' ? 'active' : ''; ?>">
-                    <a href="?page_id=<?php echo get_the_ID(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=total_cost_given" class="kpi-link" data-filter="total_cost_given">
+                    <a href="?page_id=<?php echo safe_get_page_id(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=total_cost_given" class="kpi-link" data-filter="total_cost_given">
                         <div class="kpi-icon">
                             <span class="kpi-emoji">💸</span>
                         </div>
@@ -475,7 +704,7 @@ body { background: #f8f9fa; }
 
                 <!-- Total Revenue -->
                 <div class="kpi-card revenue-card <?php echo $current_filter === 'total_revenue' ? 'active' : ''; ?>">
-                    <a href="?page_id=<?php echo get_the_ID(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=total_revenue" class="kpi-link" data-filter="total_revenue">
+                    <a href="?page_id=<?php echo safe_get_page_id(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=total_revenue" class="kpi-link" data-filter="total_revenue">
                         <div class="kpi-icon">
                             <span class="kpi-emoji">💰</span>
                         </div>
@@ -979,7 +1208,15 @@ body { background: #f8f9fa; }
         // Function to render the table with pagination
         let currentPage = 1;
         const rowsPerPage = 10;
-        let filteredRequests = <?php echo json_encode($filtered_data); ?>;
+        let filteredRequests = <?php 
+            $json_data = json_encode($filtered_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if ($json_data === false) {
+                error_log("JSON encode error for filtered_data: " . json_last_error_msg());
+                echo '[]';
+            } else {
+                echo $json_data;
+            }
+        ?>;
         
         // Render table rows for current page
         function renderTable() {
@@ -1316,7 +1553,7 @@ body { background: #f8f9fa; }
                     document.getElementById('table-container').style.display = 'block';
 
                     // Navigate to the filtered page
-                    window.location.href = `?request_date=<?php echo urlencode($selected_date); ?>&filter=${filter}`;
+                    window.location.href = `?page_id=<?php echo safe_get_page_id(); ?>&from_date=<?php echo urlencode($from_date); ?>&to_date=<?php echo urlencode($to_date); ?>&filter=${filter}`;
                 }, 1000);
             });
         });
@@ -1329,7 +1566,15 @@ body { background: #f8f9fa; }
             const searchValue = document.getElementById('search-requests').value.toLowerCase();
         
             // Start from the full PHP array
-            let allRequests = <?php echo json_encode($processed_requests); ?>;
+            let allRequests = <?php 
+                $json_data = json_encode($processed_requests, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                if ($json_data === false) {
+                    error_log("JSON encode error for processed_requests: " . json_last_error_msg());
+                    echo '[]';
+                } else {
+                    echo $json_data;
+                }
+            ?>;
             filteredRequests = allRequests.filter(request => {
                 let showRow = true;
                 if (statusFilter && request.status.toLowerCase() !== statusFilter) showRow = false;
@@ -1447,7 +1692,7 @@ body { background: #f8f9fa; }
             }
 
     // Optional: Reset URL parameters if you're using them
-    // const cleanUrl = window.location.pathname + '?page_id=' + <?php echo get_the_ID(); ?>;
+    // const cleanUrl = window.location.pathname + '?page_id=' + <?php echo safe_get_page_id(); ?>;
     // window.history.pushState({}, '', cleanUrl);
         }
 

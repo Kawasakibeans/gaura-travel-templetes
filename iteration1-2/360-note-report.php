@@ -3,460 +3,150 @@
  * Template Name: G360 Note Report
  * Template Post Type: post, page
  */
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+// Ensure WordPress functions are available when this file is accessed directly.
+if (!defined('ABSPATH')) {
+    $possibleWpLoadPaths = array_filter([
+        isset($_SERVER['DOCUMENT_ROOT']) && is_string($_SERVER['DOCUMENT_ROOT'])
+            ? rtrim($_SERVER['DOCUMENT_ROOT'], "/\\") . '/wp-load.php'
+            : null,
+        dirname(__FILE__, 5) . '/wp-load.php',
+        dirname(__FILE__, 4) . '/wp-load.php',
+        dirname(__FILE__, 3) . '/wp-load.php',
+    ]);
 
-// =============================================
-// 1. HANDLE SPECIAL REQUESTS FIRST (BEFORE ANY OUTPUT)
-// =============================================
-
-// Database connections for special requests
-function getDatabaseConnections() {
-    $mysql_servername = "localhost";
-    $mysql_username = "gaurat_sriharan";
-    $mysql_password = "r)?2lc^Q0cAE";
-    $mysql_dbname = "gaurat_gauratravel";
-
-// PostgreSQL connection parameters
-    $pgsql_dsn = 'pgsql:host=192.168.0.41;port=5432;dbname=task';
-    $pgsql_username = 'oztele';
-    $pgsql_password = 'pass1234';
-
-    try {
-        // MySQL PDO
-        $mysql_conn = new PDO("mysql:host=$mysql_servername;dbname=$mysql_dbname", $mysql_username, $mysql_password, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
-        ]);
-
-        // PostgreSQL PDO
-        $pgsql_conn = new PDO($pgsql_dsn, $pgsql_username, $pgsql_password, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
-        ]);
-
-        return [$mysql_conn, $pgsql_conn];
-    } catch(PDOException $e) {
-        die("Connection failed: " . $e->getMessage());
-    }
-}
-
-// AJAX handler for pagination
-if (isset($_GET['ajax']) && $_GET['ajax'] == 'pagination') {
-    list($mysql_conn, $pgsql_conn) = getDatabaseConnections();
-    $data = fetchCallCenterData($mysql_conn, $pgsql_conn, false, $start, $perPage);
-    $total = count($data);  // basic fallback count
-
-    ob_start();
-    if (!empty($data)) {
-        foreach ($data as $row) {
-            ?>
-            <tr>
-                <td><?= htmlspecialchars($row['Note_ID'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['CS_Agent'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Call_Date'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Call_Time'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Campaign'] ?? '') ?></td>
-                <?php
-                $callStatusClass = '';
-                $callStatus = strtolower($row['Call_Status'] ?? '');
-                if ($callStatus == 'answered') $callStatusClass = 'badge-success';
-                elseif ($callStatus == 'missed') $callStatusClass = 'badge-danger';
-                else $callStatusClass = 'badge-warning';
-                ?>
-                <td><span class='badge <?= $callStatusClass ?>'><?= htmlspecialchars($row['Call_Status'] ?? '') ?></span></td>
-                <td>
-                    <?php
-                    $duration = $row['Duration'] ?? '';
-                    if (is_numeric($duration)) {
-                        $minutes = intval(floor($duration / 60));
-                        $seconds = intval(round($duration % 60));
-                        echo $minutes . 'm ' . $seconds . 's';
-                    } else {
-                        echo htmlspecialchars($duration ?? '');
-                    }
-                    ?>
-                </td>
-                <td><?= htmlspecialchars($row['Pax_Phone'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Noble_Record'] ?? '') ?></td>
-                <td>
-                    <?= !empty($row['Booking_Date']) 
-                        ? date('d/m/y H:i', strtotime($row['Booking_Date'])) 
-                        : '' ?>
-                </td>
-                <td><?= htmlspecialchars($row['Booking_ID'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Sales_Agent'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Travel_Date'] ?? '') ?></td>
-                <?php
-                $paymentStatusClass = '';
-                $paymentStatus = strtolower($row['Payment_Status'] ?? '');
-                if ($paymentStatus == 'paid') $paymentStatusClass = 'badge-success';
-                elseif ($paymentStatus == 'pending') $paymentStatusClass = 'badge-warning';
-                else $paymentStatusClass = 'badge-info';
-                ?>
-                <td><span class='badge <?= $paymentStatusClass ?>'><?= htmlspecialchars($row['Payment_Status'] ?? '') ?></span></td>
-                <td><?= htmlspecialchars($row['Total_Pax'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Booking_Type'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Note_Category'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Note_Department'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Note_Description'] ?? '') ?></td>
-                <td><?= htmlspecialchars($row['Note_Added_On'] ?? '') ?></td>
-            </tr>
-            <?php
+    foreach ($possibleWpLoadPaths as $wpLoadPath) {
+        if (is_string($wpLoadPath) && file_exists($wpLoadPath)) {
+            require_once $wpLoadPath;
+            break;
         }
-    } else {
-        echo '<tr><td colspan="20">No data found</td></tr>';
     }
-    $tbody = ob_get_clean();
-
-    // Pagination HTML
-    $pages = ceil($total / $perPage);
-    $startPage = max(1, $page - 2);
-    $endPage = min($pages, $page + 2);
-
-    ob_start();
-    if ($page > 1) {
-        echo '<a href="#" data-page="' . ($page-1) . '">&laquo;</a>';
-    }
-    if ($startPage > 1) {
-        echo '<a href="#" data-page="1">1</a>';
-        if ($startPage > 2) echo '<span>...</span>';
-    }
-    for ($i = $startPage; $i <= $endPage; $i++) {
-        $active = ($i == $page) ? 'active' : '';
-        echo '<a href="#" data-page="' . $i . '" class="' . $active . '">' . $i . '</a>';
-    }
-    if ($endPage < $pages) {
-        if ($endPage < $pages - 1) echo '<span>...</span>';
-        echo '<a href="#" data-page="' . $pages . '">' . $pages . '</a>';
-    }
-    if ($page < $pages) {
-        echo '<a href="#" data-page="' . ($page+1) . '">&raquo;</a>';
-    }
-    $pagination = ob_get_clean();
-
-    header('Content-Type: application/json');
-    echo json_encode([
-        'tbody' => $tbody,
-        'pagination' => $pagination,
-        'showing' => 'Showing ' . ($start+1) . ' to ' . min($start + $perPage, $total) . ' of ' . $total . ' records'
-    ]);
-    exit();
 }
 
-// Handle CSV download request
-if (isset($_GET['download']) && $_GET['download'] == 'csv') {
-    list($mysql_conn, $pgsql_conn) = getDatabaseConnections();
+if (!defined('API_BASE_URL')) {
+    throw new RuntimeException('API_BASE_URL is not defined');
+}
 
-    header('Content-Type: text/csv');
-    header('Content-Disposition: attachment; filename="note_report_' . date('Y-m-d') . '.csv"');
-    header('Cache-Control: no-cache, no-store, must-revalidate');
-    header('Pragma: no-cache');
-    header('Expires: 0');
+function g360_note_report_build_url(string $endpoint): string
+{
+    $base = rtrim((string)API_BASE_URL, '/');
+    $path = '/' . ltrim($endpoint, '/');
 
-    $output = fopen('php://output', 'w');
+    // Some environments define API_BASE_URL with /v1, others without.
+    // Normalize so the final URL has exactly one /v1 between base and endpoint.
+    $baseHasV1Suffix = (bool)preg_match('~/v1$~', $base);
+    $pathHasV1Prefix = (strpos($path, '/v1/') === 0);
 
-    // CSV Headers (same as visible table)
-    fputcsv($output, [
-        'Note ID', 'Booking ID', 'Booking Date', 'Sales Agent', 'Note Added By',
-        'Travel Date', 'Booking Type', 'Total Pax', 'Note Category',
-        'Note Department', 'Note Description', 'Note Added On'
+    if ($baseHasV1Suffix && $pathHasV1Prefix) {
+        $path = substr($path, 3); // remove leading "/v1"
+    } elseif (!$baseHasV1Suffix && !$pathHasV1Prefix) {
+        $path = '/v1' . $path;
+    }
+
+    return $base . $path;
+}
+
+function g360_note_report_api(string $endpoint, array $params = []): array
+{
+    $url = g360_note_report_build_url($endpoint);
+    $query = array_filter($params, static function ($value) {
+        return $value !== null && $value !== '';
+    });
+
+    if (!empty($query)) {
+        $url .= '?' . http_build_query($query);
+    }
+
+    $response = wp_remote_get($url, [
+        'timeout' => 60,
+        'headers' => ['Accept' => 'application/json'],
     ]);
 
-    // Fetch all filtered records
-    $all_data = fetchCallCenterData($mysql_conn, $pgsql_conn, true);
+    if (is_wp_error($response)) {
+        throw new RuntimeException('API request failed: ' . $response->get_error_message());
+    }
 
-    foreach ($all_data as $row) {
+    $payload = json_decode(wp_remote_retrieve_body($response), true);
+    if (!is_array($payload) || ($payload['status'] ?? '') !== 'success') {
+        $message = $payload['message'] ?? 'Unknown API error';
+        throw new RuntimeException($message);
+    }
+
+    return $payload['data'] ?? [];
+}
+
+$filter_date = isset($_GET['filter_date']) ? sanitize_text_field($_GET['filter_date']) : date('Y-m-d');
+$department = isset($_GET['department']) ? sanitize_text_field($_GET['department']) : '';
+$category = isset($_GET['category']) ? sanitize_text_field($_GET['category']) : '';
+
+$baseQuery = [
+    'filter_date' => $filter_date,
+    'department' => $department,
+    'category' => $category,
+];
+
+try {
+    if (isset($_GET['download']) && $_GET['download'] === 'csv') {
+        $csvData = g360_note_report_api('/v1/g360-note-report', array_merge($baseQuery, ['fetch_all' => '1']));
+        $records = $csvData['records'] ?? [];
+
+        header('Content-Type: text/csv');
+        header('Content-Disposition: attachment; filename="note_report_' . date('Y-m-d') . '.csv"');
+        header('Cache-Control: no-cache, no-store, must-revalidate');
+        header('Pragma: no-cache');
+        header('Expires: 0');
+
+        $output = fopen('php://output', 'w');
         fputcsv($output, [
-            $row['Note_ID'] ?? '',
-            $row['Booking_ID'] ?? '',
-            !empty($row['Booking_Date']) ? date('d/m/y H:i', strtotime($row['Booking_Date'])) : '',
-            $row['Sales_Agent'] ?? '',
-            $row['cs_agent'] ?? '',
-            !empty($row['Travel_Date']) ? date('d/m/y H:i', strtotime($row['Travel_Date'])) : '',
-            $row['Booking_Type'] ?? '',
-            $row['Total_Pax'] ?? '',
-            $row['Note_Category'] ?? '',
-            $row['Note_Department'] ?? '',
-            $row['Note_Description'] ?? '',
-            !empty($row['Note_Added_On']) ? date('d/m/y H:i', strtotime($row['Note_Added_On'])) : ''
+            'Note ID', 'Booking ID', 'Booking Date', 'Sales Agent', 'Note Added By',
+            'Travel Date', 'Booking Type', 'Total Pax', 'Note Category',
+            'Note Department', 'Note Description', 'Note Added On'
         ]);
-    }
 
-    fclose($output);
-    exit();
-}
-
-
-
-// =============================================
-// 2. MAIN PAGE FUNCTIONALITY
-// =============================================
-
-// Database connections for main page
-list($mysql_conn, $pgsql_conn) = getDatabaseConnections();
-
-// Get filter values
-$filter_date = $_GET['filter_date'] ?? date('Y-m-d');
-$start_date = $filter_date;
-$end_date = $filter_date;
-$department = $_GET['department'] ?? '';
-$category = $_GET['category'] ?? '';
-$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-$perPage = 10;
-$start = ($page > 1) ? ($page * $perPage) - $perPage : 0;
-
-// Get data with pagination
-$data = fetchCallCenterData($mysql_conn, $pgsql_conn, true);
-
-// Get total count for pagination
-$total = count($data); // You already fetched paginated data
-$pages = ceil($total / $perPage);
-
-// Get filter options
-list($departments, $categories) = getFilterOptions($mysql_conn);
-
-// Get data for department and category counts
-$dept_counts = getCountData($mysql_conn, 'Department');
-$cat_counts = getCountData($mysql_conn, 'Category');
-
-function fetchCallCenterData($mysql_conn, $pgsql_conn, $all_records = false, $start = 0, $perPage = 10) {
-    $filter_date = $_GET['filter_date'] ?? date('Y-m-d');
-$start_date = $filter_date;
-$end_date = $filter_date;
-    $department = $_GET['department'] ?? '';
-    $category = $_GET['category'] ?? '';
-
-    // Updated WHERE clause uses 'bns' alias (wpk4_backend_booking_note_summary)
-    $where = [
-        "(bns.updated_on BETWEEN :start_date AND :end_date and orderpax.order_id is not null and bns.additional_note is not null)"
-    ];
-    $params = [
-        ':start_date' => "$start_date 00:00:00",
-        ':end_date' => "$end_date 23:59:59"
-    ];
-    if ($department) {
-        $where[] = "(bns.note_department = :department)";
-        $params[':department'] = $department;
-    }
-    if ($category) {
-        $where[] = "(bns.note_category = :category)";
-        $params[':category'] = $category;
-    }
-    $where_clause = implode(' AND ', $where);  
-
-    // Build the main query joining bookings with prepopulated summary table
-    $mysql_sql = "
-        SELECT
-        orderpax.order_id AS Booking_ID,
-        orderpax.order_date AS Booking_Date,
-        orderpax.agent_info AS Sales_Agent,
-        CASE 
-            WHEN MIN(orderpax.travel_date) > CURRENT_DATE THEN MIN(orderpax.travel_date)
-            ELSE MAX(orderpax.travel_date)
-        END AS Travel_Date,
-        orderpax.order_type AS Booking_Type,
-        SUM(orderpax.total_pax) AS Total_Pax,
-        bns.type_id,
-        MAX(bns.auto_id) AS Note_ID,
-        MAX(bns.updated_on) AS Note_Added_On,
-        MAX(CASE WHEN bns.meta_key = 'Booking Note Category' THEN bns.meta_value END) AS Note_Category,
-        MAX(CASE WHEN bns.meta_key = 'Booking Note Description' THEN bns.meta_value END) AS Note_Description,
-        MAX(CASE WHEN bns.meta_key = 'Booking Note Department' THEN bns.meta_value END) AS Note_Department,
-        MAX(bns.updated_by) AS cs_agent
-    FROM 
-        (
-          SELECT *
-          FROM wpk4_backend_history_of_updates
-          WHERE updated_on >= NOW() - INTERVAL 7 DAY
-            AND additional_note IS NOT NULL
-        ) AS bns
-    JOIN 
-        wpk4_backend_travel_bookings orderpax
-        ON bns.type_id = orderpax.order_id
-    WHERE $where_clause    
-    GROUP BY 
-        orderpax.order_id, 
-        orderpax.order_date, 
-        orderpax.agent_info, 
-        orderpax.order_type, 
-        bns.type_id   
-    ";
-
-    if (!$all_records) {
-        $mysql_sql .= " LIMIT :start, :perPage";
-        $params[':start'] = $start;
-        $params[':perPage'] = $perPage;
-    }
-
-    $stmt = $mysql_conn->prepare($mysql_sql);
-
-    foreach ($params as $key => &$val) {
-        if ($key === ':start' || $key === ':perPage') {
-            $stmt->bindParam($key, $val, PDO::PARAM_INT);
-        } else {
-            $stmt->bindParam($key, $val);
-        }
-    }
-
-    $stmt->execute();
-    $booking_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    // Fetch call data from PostgreSQL for the Note_IDs found
-    $call_data_indexed = [];
-    if (!empty($booking_data)) {
-        $note_ids = [];
-        foreach ($booking_data as $booking) {
-            if (!empty($booking['Note_ID'])) {
-                $note_ids[] = trim($booking['Note_ID']);
-            }
-        }
-        $note_ids = array_unique($note_ids);
-        if (!empty($note_ids)) {
-            $params = [];
-            $placeholders = [];
-            foreach ($note_ids as $i => $id) {
-                $param = ":note_id_$i";
-                $params[$param] = $id;
-                $placeholders[] = "TRIM(c.call_feedback) LIKE '%' || $param || '%'";
-            }
-            $where_clause = implode(' OR ', $placeholders);
-
-            $pgsql_sql = "
-                SELECT 
-                    TRIM(c.call_feedback) AS note_id,
-                    c.call_date AS call_date,
-                    c.call_time AS call_time,
-                    c.appl AS campaign,
-                    c.rec_status AS call_status,
-                    c.call_duration AS duration,
-                    CONCAT(c.country_id,c.areacode,c.phone) AS pax_phone,
-                    c.record_id AS noble_record
-                FROM cust_ob_inb_hst c
-                WHERE $where_clause
-            ";
-
-            $stmt = $pgsql_conn->prepare($pgsql_sql);
-            foreach ($params as $param => $value) {
-                $stmt->bindValue($param, $value);
-            }
-            $stmt->execute();
-
-            $call_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            foreach ($call_data as $call) {
-                if (!empty($call['note_id'])) {
-                    $call_note_id = trim($call['note_id']);
-                    foreach ($note_ids as $id) {
-                        if (trim($id) === $call_note_id) {
-                            $cleaned_call = [];
-                            foreach ($call as $key => $value) {
-                                $cleaned_call[$key] = $value !== null ? trim($value) : '';
-                            }
-                            $call_data_indexed[$id] = $cleaned_call;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Merge call data into booking data
-    foreach ($booking_data as &$booking) {
-        $note_id = isset($booking['Note_ID']) ? trim($booking['Note_ID']) : null;
-        if ($note_id !== null && $note_id !== '' && isset($call_data_indexed[$note_id])) {
-            $call = $call_data_indexed[$note_id];
-            $booking = array_merge($booking, [
-                'Call_Date' => $call['call_date'] ?? '',
-                'Call_Time' => $call['call_time'] ?? '',
-                'Campaign' => $call['campaign'] ?? '',
-                'Call_Status' => $call['call_status'] ?? '',
-                'Duration' => $call['duration'] ?? '',
-                'Pax_Phone' => $call['pax_phone'] ?? '',
-                'Noble_Record' => $call['noble_record'] ?? ''
-            ]);
-        } else {
-            $booking = array_merge($booking, [
-                'Call_Date' => '',
-                'Call_Time' => '',
-                'Campaign' => '',
-                'Call_Status' => '',
-                'Duration' => '',
-                'Pax_Phone' => '',
-                'Noble_Record' => ''
+        foreach ($records as $row) {
+            fputcsv($output, [
+                $row['Note_ID'] ?? '',
+                $row['Booking_ID'] ?? '',
+                !empty($row['Booking_Date']) ? date('d/m/y H:i', strtotime($row['Booking_Date'])) : '',
+                $row['Sales_Agent'] ?? '',
+                $row['cs_agent'] ?? '',
+                !empty($row['Travel_Date']) ? date('d/m/y H:i', strtotime($row['Travel_Date'])) : '',
+                $row['Booking_Type'] ?? '',
+                $row['Total_Pax'] ?? '',
+                $row['Note_Category'] ?? '',
+                $row['Note_Department'] ?? '',
+                $row['Note_Description'] ?? '',
+                !empty($row['Note_Added_On']) ? date('d/m/y H:i', strtotime($row['Note_Added_On'])) : ''
             ]);
         }
+
+        fclose($output);
+        exit;
     }
 
-    return $booking_data;
-}
-
-
-
-function getFilterOptions($mysql_conn) {
-    // Cache variables to avoid multiple queries per request
-    static $departments = null;
-    static $categories = null;
-
-    if ($departments === null) {
-        $stmt = $mysql_conn->query("
-            SELECT DISTINCT note_department AS meta_value 
-            FROM wpk4_backend_booking_note_summary 
-            WHERE note_department IS NOT NULL AND note_department <> '' 
-            ORDER BY note_department
-        ");
-        $departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-
-    if ($categories === null) {
-        $stmt = $mysql_conn->query("
-            SELECT DISTINCT note_category AS meta_value 
-            FROM wpk4_backend_booking_note_summary 
-            WHERE note_category IS NOT NULL AND note_category <> '' 
-            ORDER BY note_category
-        ");
-        $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-
-    return [$departments, $categories];
-}
-
-function getCountData($mysql_conn, $type) {
-    $filter_date = $_GET['filter_date'] ?? date('Y-m-d');
-$start_date = $filter_date;
-$end_date = $filter_date;
-
-    // Map type to the relevant column in wpk4_backend_booking_note_summary
-    $column_map = [
-        'Category' => 'note_category',
-        'Department' => 'note_department',
-        'Description' => 'note_description',
-    ];
-
-    if (!isset($column_map[$type])) {
-        throw new InvalidArgumentException("Invalid type: $type");
-    }
-
-    $column = $column_map[$type];
-
-    $sql = "
-        SELECT 
-            $column AS group_name,
-            COUNT(*) AS count
-        FROM wpk4_backend_booking_note_summary bns
-        WHERE bns.updated_on BETWEEN :start_date AND :end_date
-          AND $column IS NOT NULL AND $column <> ''
-          AND bns.note_id IS NOT NULL
-        GROUP BY $column
-        ORDER BY count DESC
-    ";
-
-    $stmt = $mysql_conn->prepare($sql);
-    $stmt->execute([
-        ':start_date' => "$start_date 00:00:00",
-        ':end_date' => "$end_date 23:59:59"
+    $reportData = g360_note_report_api('/v1/g360-note-report', array_merge($baseQuery, ['fetch_all' => '1']));
+    $filtersData = g360_note_report_api('/v1/g360-note-report/filters');
+    $deptCountsData = g360_note_report_api('/v1/g360-note-report/counts', [
+        'filter_date' => $filter_date,
+        'type' => 'department'
     ]);
-
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $catCountsData = g360_note_report_api('/v1/g360-note-report/counts', [
+        'filter_date' => $filter_date,
+        'type' => 'category'
+    ]);
+} catch (Throwable $e) {
+    wp_die('Failed to load G360 note data: ' . esc_html($e->getMessage()));
 }
+
+$data = $reportData['records'] ?? [];
+$paginationInfo = $reportData['pagination'] ?? [];
+$total = $paginationInfo['total'] ?? count($data);
+$perPage = $paginationInfo['per_page'] ?? 10;
+$pages = $paginationInfo['total_pages'] ?? 1;
+
+$departments = $filtersData['departments'] ?? [];
+$categories = $filtersData['categories'] ?? [];
+$dept_counts = $deptCountsData['items'] ?? [];
+$cat_counts = $catCountsData['items'] ?? [];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1028,8 +718,3 @@ $end_date = $filter_date;
     </script>
 </body>
 </html>
-<?php
-// Close connections
-$mysql_conn = null;
-$pgsql_conn = null;
-?>

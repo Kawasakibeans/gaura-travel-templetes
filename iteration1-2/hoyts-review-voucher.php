@@ -1,31 +1,25 @@
 <?php
 /**
  * hoyts_voucher_unified.php
- * One-file page: DB info + HOYTS fetch + barcode (rotated 90°) + full terms text
+ * One-file page: API fetch + HOYTS fetch + barcode (rotated 90°) + full terms text
  * + HOYTS fields: E-Voucher Number, PIN, Expires (parsed from upstream HTML).
  */
-// declare(strict_types=1);
-// ini_set('display_errors', 1);
-// error_reporting(E_ALL);
-ini_set('display_errors', '1');
-ini_set('display_startup_errors', '1');
+declare(strict_types=1);
+ini_set('display_errors', 1);
 error_reporting(E_ALL);
 date_default_timezone_set('Australia/Melbourne');
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+
+$base_url = API_BASE_URL;
 
 /* ====== Load WP DB constants ====== */
-$php_config_path = '/home/aigauratravelcom/public_html/wp-config.php'; 
+$php_config_path = '/home/gt1ybwhome/public_html/wp-config.php'; 
 if (!file_exists($php_config_path)) { http_response_code(500); echo "<h1>wp-config.php not found</h1>"; exit; }
 require_once $php_config_path;
 
-/* ====== DB connect ====== */
-mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-$mysqli = mysqli_init();
-if (defined('MYSQLI_OPT_INT_AND_FLOAT_NATIVE')) { mysqli_options($mysqli, MYSQLI_OPT_INT_AND_FLOAT_NATIVE, 1); }
-$mysqli->real_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-$mysqli->set_charset('utf8mb4');
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'http://localhost/api';
 
 /* ====== Config ====== */
-$table         = 'wpk4_backend_marketing_hoyts_vouchers';
 $cacheDir      = __DIR__ . '/cache_qr';   // ensure writable (775/755)
 $HTML_TTL      = 60 * 30;                 // 30 min
 $IMG_TTL       = 60 * 60 * 24 * 7;        // 7 days
@@ -90,24 +84,44 @@ function format_hoyts_date(?string $s): ?string {
   return $s;
 }
 
-/* ====== Select voucher ====== */
+/* ====== Fetch Voucher via API ====== */
+$apiUrl = $base_url . '/hoyts-vouchers/next';
 if (isset($_GET['id']) && ctype_digit($_GET['id'])) {
-  $id = (int)$_GET['id'];
-  $sql = "SELECT id,voucher_code,email,hoyts_url,status,expires_at,created_at
-          FROM {$table} WHERE id=? AND status='active' AND email IS NULL LIMIT 1";
-  $stmt = $mysqli->prepare($sql); $stmt->bind_param("i",$id);
-} else {
-  $sql = "SELECT id,voucher_code,email,hoyts_url,status,expires_at,created_at
-          FROM {$table} WHERE status='active' AND email IS NULL
-          ORDER BY COALESCE(created_at,'1970-01-01 00:00:00') ASC LIMIT 1";
-  $stmt = $mysqli->prepare($sql);
+    $apiUrl .= '?id=' . $_GET['id'];
 }
-$stmt->execute(); $res=$stmt->get_result(); $row=$res->fetch_assoc(); $stmt->close();
-if (!$row) bad('No active voucher with empty email.');
-$id=(int)$row['id']; $code=(string)$row['voucher_code']; $hoytsUrl=(string)$row['hoyts_url'];
-$status=(string)$row['status']; $email=$row['email']?:'—';
-$expiresDb=$row['expires_at']?date('M d, Y',strtotime($row['expires_at'])):'—';
-$created=$row['created_at']?date('M d, Y H:i',strtotime($row['created_at'])):'—';
+
+$ch = curl_init();
+curl_setopt_array($ch, [
+    CURLOPT_URL => $apiUrl,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_FOLLOWLOCATION => true
+]);
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+$row = null;
+if ($response && $httpCode < 400) {
+    $json = json_decode($response, true);
+    if (isset($json['data'])) {
+        $row = $json['data'];
+    }
+}
+
+if (!$row) {
+    bad('No active voucher with empty email or API error.', $httpCode ?: 404);
+}
+
+// Map API fields to local variables
+$id = (int)$row['id'];
+$code = (string)$row['voucher_code'];
+$hoytsUrl = (string)$row['hoyts_url'];
+$status = (string)$row['status'];
+$email = $row['email'] ?: '—';
+
+// The API returns pre-formatted dates or raw dates; check structure
+$expiresDb = $row['expires_at_formatted'] ?? ($row['expires_at'] ? date('M d, Y', strtotime($row['expires_at'])) : '—');
+$created = $row['created_at_formatted'] ?? ($row['created_at'] ? date('M d, Y H:i', strtotime($row['created_at'])) : '—');
 
 /* ====== Cache dir ====== */
 safe_mkdir($cacheDir);

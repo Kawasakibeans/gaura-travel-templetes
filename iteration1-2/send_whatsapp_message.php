@@ -1,6 +1,15 @@
 <?php
-require_once '../../../../wp-config-custom.php';
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 
+// Database connection - no longer needed (now using API endpoints)
+// All database queries have been replaced with API endpoint calls
+// Old database connection code is commented out below
+// require_once '../../../../wp-config-custom.php';
+
+require_once( dirname( __FILE__, 5 ) . '/wp-config.php' );
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+ $api_url = API_BASE_URL;
 $apiUrl = 'https://gauratravel.com.au/wp-content/themes/twentytwenty/templates/tpl_admin_backend_for_credential_pass_main.php';
 $ch = curl_init($apiUrl);
 curl_setopt_array($ch, [
@@ -79,6 +88,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo "cURL Error: " . curl_error($ch);
     } elseif ($httpcode >= 200 && $httpcode < 300) {
         
+        // Log message via API endpoint
+        // API Endpoint: POST /v1/whatsapp/messages
+        // Sources: WhatsAppMessageService::sendMessage, WhatsAppMessageDAL::logMessage
+        // Body parameters: phone (required), message (required)
+        try {
+           
+            $endpoint = $api_url . '/whatsapp/messages/log';
+            
+            // Prepare request body
+            $apiPayload = [
+                'phone'     => $user_phone,
+                'message'   => $user_message,
+                'recipient' => $recipient_number
+            ];
+
+            
+            $apiCh = curl_init($endpoint);
+            curl_setopt($apiCh, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($apiCh, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($apiCh, CURLOPT_TIMEOUT, 10);
+            curl_setopt($apiCh, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($apiCh, CURLOPT_POST, true);
+            curl_setopt($apiCh, CURLOPT_POSTFIELDS, json_encode($apiPayload));
+            curl_setopt($apiCh, CURLOPT_HTTPHEADER, [
+                'Content-Type: application/json',
+                'Accept: application/json'
+            ]);
+            
+            $apiResponse = curl_exec($apiCh);
+            $apiHttpCode = curl_getinfo($apiCh, CURLINFO_HTTP_CODE);
+            curl_close($apiCh);
+            
+            if ($apiHttpCode >= 200 && $apiHttpCode < 300) {
+                $apiData = json_decode($apiResponse, true);
+                if (isset($apiData['status']) && $apiData['status'] === 'success') {
+                    echo "✅ Message logged via API successfully!";
+                } else {
+                    echo "⚠️ Message sent to WhatsApp but API logging returned: " . ($apiData['message'] ?? 'Unknown error');
+                }
+            } else {
+    echo "⚠️ Logging API FAILED\n";
+    echo "HTTP CODE: $apiHttpCode\n";
+    echo "ENDPOINT: $endpoint\n";
+    echo "PAYLOAD:\n";
+    var_dump($apiPayload);
+    echo "\nRESPONSE:\n";
+    echo $apiResponse;
+    exit;
+}
+        } catch (Exception $e) {
+            echo "⚠️ Message sent to WhatsApp but API logging error: " . $e->getMessage();
+        }
+        
+        echo "\nMessage sent successfully!";
+        
+        // OLD SQL QUERY - COMMENTED OUT (now using API endpoint)
+        /*
+        // SQL Query:
+        // INSERT INTO whatsapp_messages
+        //     (sender_type, sender_id, recipient_id, message, message_id, status, msg_read_customer, updated_on)
+        // VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        // Source: WhatsAppMessageService::sendMessage, WhatsAppMessageDAL::logMessage
+        // Method: POST
+        // Endpoint: /v1/whatsapp/messages
+        // Body parameters: phone (required), message (required)
+        
         $sender_type = 'customer';
         $sender_id = $user_phone;
         $recipient_id = $WHATSAPP_API_PHONE_NUMBER;
@@ -117,8 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             echo "❌ Statement prepare failed: " . $mysqli->error;
         }
-        
-        echo "Message sent successfully!";
+        */
     } else {
         echo "Failed to send. Response: " . $response;
     }

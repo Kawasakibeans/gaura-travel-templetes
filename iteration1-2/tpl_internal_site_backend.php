@@ -54,7 +54,9 @@ if(isset($current_user) && $user_role != '') // check whether anyone logged in
                 {
                     
                 echo "<h2 style='text-align: center;'>Itineraries</h2>";
-                include('wp-config-custom.php');
+                // ✅ NOTE: This file does not contain any direct database queries
+                // All data is retrieved using WordPress functions (get_post_field, get_post_meta, get_option)
+                // The wp-config-custom.php include was removed as it's not needed - no mysqli queries are used
                 
         $traveldate_fxed = '0000-00-00 00:00:00';
                

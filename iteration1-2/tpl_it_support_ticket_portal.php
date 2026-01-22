@@ -8,24 +8,537 @@
  * @since Twenty Twenty 1.0
  */
 
-get_header();
-header('Content-Type: text/html; charset=utf-8');
+require_once($_SERVER['DOCUMENT_ROOT'].'/wp-load.php');
 
 date_default_timezone_set("Australia/Melbourne"); 
 $defaultlink_gaura = "https://$_SERVER[HTTP_HOST]$_SERVER[REQUEST_URI]";
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1';
 
-//ini_set('display_errors', '1');
-//ini_set('display_startup_errors', '1');
-global $current_user; 
+global $current_user, $wpdb; 
 wp_get_current_user();
 $first_name = $current_user->user_firstname;
 $last_name = $current_user->user_lastname;
 $login_email = $current_user->user_email;
 $site_url = '';
 $current_date_and_time = date("Y-m-d H:i:s");
+$current_username = $current_user->user_login ?? 'system';
+
+// Check if this is an API request
+$is_api_request = false;
+$request_uri = $_SERVER['REQUEST_URI'] ?? '';
+$path = parse_url($request_uri, PHP_URL_PATH);
+$path_parts = array_filter(explode('/', trim($path, '/')));
+$path_parts = array_values($path_parts);
+
+// Check if path contains API indicators
+for ($i = 0; $i < count($path_parts); $i++) {
+    if ($path_parts[$i] === 'it-support' && isset($path_parts[$i + 1]) && $path_parts[$i + 1] === 'tickets') {
+        $is_api_request = true;
+        break;
+    }
+}
+
+// If API request, handle it and exit
+if ($is_api_request) {
+    header('Content-Type: application/json');
+    
+    // Helper functions
+    function sendResponse($status, $data = null, $message = null, $code = 200) {
+        http_response_code($code);
+        echo json_encode([
+            'status' => $status,
+            'data' => $data,
+            'message' => $message
+        ]);
+        exit;
+    }
+    
+    function sendError($message, $code = 500) {
+        sendResponse('error', null, $message, $code);
+    }
+    
+    $method = $_SERVER['REQUEST_METHOD'];
+    
+    // Extract ticket ID and action from path
+    $ticket_id = null;
+    $action = null;
+    for ($i = 0; $i < count($path_parts); $i++) {
+        if ($path_parts[$i] === 'tickets') {
+            if (isset($path_parts[$i + 1]) && is_numeric($path_parts[$i + 1])) {
+                $ticket_id = intval($path_parts[$i + 1]);
+            }
+            if (isset($path_parts[$i + 2])) {
+                $action = $path_parts[$i + 2];
+            } else if (isset($path_parts[$i + 1]) && !is_numeric($path_parts[$i + 1])) {
+                $action = $path_parts[$i + 1];
+            }
+            break;
+        }
+    }
+    
+    try {
+        // POST /v1/it-support/tickets - Create IT support ticket
+        if ($method === 'POST' && $ticket_id === null && $action === null) {
+            // Validate required fields
+            $required = ['first_name', 'last_name', 'branch_location', 'department', 'email', 'type', 'category', 'specification', 'escalate_to'];
+            $data = [];
+            foreach ($required as $field) {
+                if (empty($_POST[$field])) {
+                    sendError("Field '{$field}' is required", 400);
+                }
+                $data[$field] = trim($_POST[$field]);
+            }
+            
+            // Optional fields
+            if (isset($_POST['subcategory'])) {
+                $data['subcategory'] = trim($_POST['subcategory']);
+            }
+            if (isset($_POST['delegate_name'])) {
+                $data['delegate_name'] = trim($_POST['delegate_name']);
+            }
+
+            // Handle file uploads
+            $existing_pnr_screenshot = '';
+            if (isset($_FILES['existing_pnr_screenshot']) && $_FILES['existing_pnr_screenshot']['error'] == 0) {
+                $target_dir = $_SERVER['DOCUMENT_ROOT'] . '/wp-content/uploads/customized_function_uploads/';
+                if (!file_exists($target_dir)) {
+                    wp_mkdir_p($target_dir);
+                }
+                $file_extension = pathinfo($_FILES['existing_pnr_screenshot']['name'], PATHINFO_EXTENSION);
+                $file_name = 'existing_pnr_' . time() . '_' . uniqid() . '.' . $file_extension;
+                $target_path = $target_dir . $file_name;
+                if (move_uploaded_file($_FILES['existing_pnr_screenshot']['tmp_name'], $target_path)) {
+                    $existing_pnr_screenshot = 'wp-content/uploads/customized_function_uploads/' . $file_name;
+                }
+            }
+
+            $new_option_screenshot = '';
+            if (isset($_FILES['new_option_screenshot']) && $_FILES['new_option_screenshot']['error'] == 0) {
+                $target_dir = $_SERVER['DOCUMENT_ROOT'] . '/wp-content/uploads/customized_function_uploads/';
+                if (!file_exists($target_dir)) {
+                    wp_mkdir_p($target_dir);
+                }
+                $file_extension = pathinfo($_FILES['new_option_screenshot']['name'], PATHINFO_EXTENSION);
+                $file_name = 'new_option_' . time() . '_' . uniqid() . '.' . $file_extension;
+                $target_path = $target_dir . $file_name;
+                if (move_uploaded_file($_FILES['new_option_screenshot']['tmp_name'], $target_path)) {
+                    $new_option_screenshot = 'wp-content/uploads/customized_function_uploads/' . $file_name;
+                }
+            }
+
+            // Original Query:
+            // INSERT INTO wpk4_backend_it_support_ticket_portal 
+            // (fname, lname, branch_location, department, email, request_type, category, sub_category, 
+            //  specification, existing_pnr_screenshot, new_option_screenshot, escalate_to, escalate_by, 
+            //  delegate_name, status) 
+            // VALUES 
+            // (:fname, :lname, :branch_location, :department, :email, :type, :category, :sub_category, 
+            //  :specification, :existing_pnr_screenshot, :new_option_screenshot, :escalate_to, :escalate_by, 
+            //  :delegate_name, 'pending')
+
+            $result = $wpdb->insert(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                [
+                    'fname' => $data['first_name'],
+                    'lname' => $data['last_name'],
+                    'branch_location' => $data['branch_location'],
+                    'department' => $data['department'],
+                    'email' => $data['email'],
+                    'request_type' => $data['type'],
+                    'category' => $data['category'],
+                    'sub_category' => $data['subcategory'] ?? '',
+                    'specification' => $data['specification'],
+                    'existing_pnr_screenshot' => $existing_pnr_screenshot,
+                    'new_option_screenshot' => $new_option_screenshot,
+                    'escalate_to' => $data['escalate_to'],
+                    'escalate_by' => $current_username,
+                    'delegate_name' => $data['delegate_name'] ?? '',
+                    'status' => 'pending'
+                ],
+                ['%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s']
+            );
+
+            if ($result === false) {
+                sendError('Failed to create ticket: ' . $wpdb->last_error, 500);
+            }
+
+            sendResponse('success', ['ticket_id' => $wpdb->insert_id, 'message' => 'Ticket created successfully'], 'Ticket created successfully', 201);
+        }
+
+        // POST /v1/it-support/tickets/web-escalation - Create web escalation ticket
+        if ($method === 'POST' && $action === 'web-escalation') {
+            // Same validation as above
+            $required = ['first_name', 'last_name', 'branch_location', 'department', 'email', 'type', 'category', 'specification', 'escalate_to'];
+            $data = [];
+            foreach ($required as $field) {
+                if (empty($_POST[$field])) {
+                    sendError("Field '{$field}' is required", 400);
+                }
+                $data[$field] = trim($_POST[$field]);
+            }
+            
+            if (isset($_POST['subcategory'])) {
+                $data['subcategory'] = trim($_POST['subcategory']);
+            }
+            if (isset($_POST['delegate_name'])) {
+                $data['delegate_name'] = trim($_POST['delegate_name']);
+            }
+
+            // Handle file uploads (same as above)
+            $existing_pnr_screenshot = '';
+            if (isset($_FILES['existing_pnr_screenshot']) && $_FILES['existing_pnr_screenshot']['error'] == 0) {
+                $target_dir = $_SERVER['DOCUMENT_ROOT'] . '/wp-content/uploads/customized_function_uploads/';
+                if (!file_exists($target_dir)) {
+                    wp_mkdir_p($target_dir);
+                }
+                $file_extension = pathinfo($_FILES['existing_pnr_screenshot']['name'], PATHINFO_EXTENSION);
+                $file_name = 'existing_pnr_' . time() . '_' . uniqid() . '.' . $file_extension;
+                $target_path = $target_dir . $file_name;
+                if (move_uploaded_file($_FILES['existing_pnr_screenshot']['tmp_name'], $target_path)) {
+                    $existing_pnr_screenshot = 'wp-content/uploads/customized_function_uploads/' . $file_name;
+                }
+            }
+
+            $new_option_screenshot = '';
+            if (isset($_FILES['new_option_screenshot']) && $_FILES['new_option_screenshot']['error'] == 0) {
+                $target_dir = $_SERVER['DOCUMENT_ROOT'] . '/wp-content/uploads/customized_function_uploads/';
+                if (!file_exists($target_dir)) {
+                    wp_mkdir_p($target_dir);
+                }
+                $file_extension = pathinfo($_FILES['new_option_screenshot']['name'], PATHINFO_EXTENSION);
+                $file_name = 'new_option_' . time() . '_' . uniqid() . '.' . $file_extension;
+                $target_path = $target_dir . $file_name;
+                if (move_uploaded_file($_FILES['new_option_screenshot']['tmp_name'], $target_path)) {
+                    $new_option_screenshot = 'wp-content/uploads/customized_function_uploads/' . $file_name;
+                }
+            }
+
+            $result = $wpdb->insert(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                [
+                    'fname' => $data['first_name'],
+                    'lname' => $data['last_name'],
+                    'branch_location' => $data['branch_location'],
+                    'department' => $data['department'],
+                    'email' => $data['email'],
+                    'request_type' => $data['type'],
+                    'category' => $data['category'],
+                    'sub_category' => $data['subcategory'] ?? '',
+                    'specification' => $data['specification'],
+                    'existing_pnr_screenshot' => $existing_pnr_screenshot,
+                    'new_option_screenshot' => $new_option_screenshot,
+                    'escalate_to' => $data['escalate_to'],
+                    'escalate_by' => $current_username,
+                    'delegate_name' => $data['delegate_name'] ?? '',
+                    'status' => 'pending',
+                    'sub_status' => 'Escalated to Web'
+                ],
+                ['%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s']
+            );
+
+            if ($result === false) {
+                sendError('Failed to create ticket: ' . $wpdb->last_error, 500);
+            }
+
+            sendResponse('success', ['ticket_id' => $wpdb->insert_id, 'message' => 'Web escalation ticket created successfully'], 'Web escalation ticket created successfully', 201);
+        }
+
+        // GET /v1/it-support/tickets - List IT support tickets
+        if ($method === 'GET' && $ticket_id === null && $action === null) {
+            $where = [];
+            $whereValues = [];
+            $whereFormats = [];
+
+            // Request date filter
+            if (!empty($_GET['request_date'])) {
+                $where[] = "created_at LIKE %s";
+                $whereValues[] = trim($_GET['request_date']) . '%';
+                $whereFormats[] = '%s';
+            }
+
+            // Problem category filter
+            if (!empty($_GET['problem_category'])) {
+                $where[] = "request_type = %s";
+                $whereValues[] = trim($_GET['problem_category']);
+                $whereFormats[] = '%s';
+            }
+
+            // Department filter
+            if (!empty($_GET['department'])) {
+                $where[] = "department = %s";
+                $whereValues[] = trim($_GET['department']);
+                $whereFormats[] = '%s';
+            }
+
+            // Case ID filter
+            if (!empty($_GET['case_id'])) {
+                $where[] = "auto_id = %d";
+                $whereValues[] = intval($_GET['case_id']);
+                $whereFormats[] = '%d';
+            }
+
+            // Status filter
+            if (!empty($_GET['status']) && $_GET['status'] !== 'all') {
+                if ($_GET['status'] === 'Pending') {
+                    $where[] = "(status NOT IN ('Completed', 'Rejected'))";
+                } else {
+                    $where[] = "status = %s";
+                    $whereValues[] = trim($_GET['status']);
+                    $whereFormats[] = '%s';
+                }
+            } else if (empty($_GET['status']) || $_GET['status'] !== 'all') {
+                $where[] = "(status NOT IN ('Completed', 'Rejected'))";
+            }
+
+            // Exclude web escalations
+            $where[] = "(sub_status IS NULL OR sub_status != 'Escalated to Web')";
+
+            // Original Query:
+            // SELECT * FROM wpk4_backend_it_support_ticket_portal
+            // WHERE [filters based on query parameters]
+            // AND (sub_status IS NULL OR sub_status != 'Escalated to Web')
+            // ORDER BY auto_id DESC
+            // LIMIT 100
+
+            $sql = "SELECT * FROM {$wpdb->prefix}backend_it_support_ticket_portal";
+            
+            if (!empty($where)) {
+                $sql .= " WHERE " . implode(" AND ", $where);
+            }
+            
+            $sql .= " ORDER BY auto_id DESC LIMIT 100";
+
+            if (!empty($whereValues)) {
+                $prepared = $wpdb->prepare($sql, $whereValues);
+                $results = $wpdb->get_results($prepared, ARRAY_A);
+            } else {
+                $results = $wpdb->get_results($sql, ARRAY_A);
+            }
+
+            sendResponse('success', $results ?: [], 'Tickets retrieved successfully');
+        }
+
+        // PATCH /v1/it-support/tickets/{ticket_id}/remark - Update ticket remark
+        if ($method === 'PATCH' && $ticket_id !== null && $action === 'remark') {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+
+            if (empty($input['remark'])) {
+                sendError('Remark is required', 400);
+            }
+
+            // Original Query:
+            // UPDATE wpk4_backend_it_support_ticket_portal 
+            // SET remark = :remark, updated_by = :updated_by 
+            // WHERE auto_id = :ticket_id
+
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                [
+                    'remark' => trim($input['remark']),
+                    'updated_by' => $current_username
+                ],
+                ['auto_id' => $ticket_id],
+                ['%s', '%s'],
+                ['%d']
+            );
+
+            if ($result === false) {
+                sendError('Failed to update remark: ' . $wpdb->last_error, 500);
+            }
+
+            sendResponse('success', ['message' => 'Remark updated successfully'], 'Remark updated successfully');
+        }
+
+        // PATCH /v1/it-support/tickets/{ticket_id}/status - Update ticket status
+        if ($method === 'PATCH' && $ticket_id !== null && $action === 'status') {
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (empty($input)) {
+                $input = $_POST;
+            }
+
+            $updateData = [];
+            $updateFormats = [];
+
+            if (isset($input['status'])) {
+                $updateData['status'] = trim($input['status']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['priority'])) {
+                $updateData['priority'] = trim($input['priority']);
+                $updateFormats[] = '%s';
+            }
+            if (isset($input['delegate_name'])) {
+                $updateData['delegate_name'] = trim($input['delegate_name']);
+                $updateFormats[] = '%s';
+            }
+
+            if (empty($updateData)) {
+                sendError('At least one field (status, priority, delegate_name) must be provided', 400);
+            }
+
+            $updateData['updated_by'] = $current_username;
+            $updateFormats[] = '%s';
+
+            // Original Query:
+            // UPDATE wpk4_backend_it_support_ticket_portal 
+            // SET status = :status, 
+            //     priority = :priority, 
+            //     delegate_name = :delegate_name,
+            //     updated_by = :updated_by
+            // WHERE auto_id = :ticket_id
+
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                $updateData,
+                ['auto_id' => $ticket_id],
+                $updateFormats,
+                ['%d']
+            );
+
+            if ($result === false) {
+                sendError('Failed to update status: ' . $wpdb->last_error, 500);
+            }
+
+            // Get ticket data for email notification
+            $ticket = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT * FROM {$wpdb->prefix}backend_it_support_ticket_portal WHERE auto_id = %d",
+                    $ticket_id
+                ),
+                ARRAY_A
+            );
+
+            // Send email if status is 'Awaiting HO' or 'Escalated to HO'
+            if (!empty($input['status']) && in_array($input['status'], ['Awaiting HO', 'Escalated to HO']) && $ticket) {
+                $mailbody = '<table class="wp-travel-wrapper" style="border:0;" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                        <td width="50%" style="text-align:left;border:0; margin: 0; padding: 7px 7px;">
+                            <img class="size-full wp-image-42537" src="https://gauratravel.com.au/wp-content/uploads/2022/01/cropped-GauraTravel_logo_small_2.png" alt="Gaura Travel logo" width="203" height="50" />
+                        </td>
+                        <td width="50%" style="border:0; text-align:right; margin: 0; padding: 7px 7px;">
+                        </td>
+                    </tr>
+                </table>
+                </br>';
+                $mailbody .= '<table class="wp-travel-wrapper" style="border:0;" width="100%" cellspacing="0" cellpadding="0">';
+                
+                $fields = [
+                    "First Name" => $ticket['fname'],
+                    "Last Name" => $ticket['lname'],
+                    "Department" => $ticket['department'],
+                    "Request Type" => $ticket['request_type'],
+                    "Escalated To" => $ticket['escalate_to'],
+                    "Escalated By" => $ticket['escalate_by'],
+                    "Status" => $ticket['status'],
+                    "Created At" => $ticket['created_at']
+                ];
+                
+                foreach ($fields as $label => $value) {
+                    $mailbody .= '
+                        <tr>
+                            <td style="padding: 7px 7px; font-weight: 700;">' . esc_html($label) . '</td>
+                            <td style="padding: 7px 7px;">' . esc_html($value) . '</td>
+                        </tr>';
+                }
+                
+                $mailbody .= '</table>';
+                
+                include_once(ABSPATH . WPINC . '/class-phpmailer.php');
+                include_once(ABSPATH . WPINC . '/PHPMailer/SMTP.php');
+                $mail = new PHPMailer();
+                $mail->IsSMTP();
+                $mail->Host = 'tls://smtp.office365.com:587';
+                $mail->Port = '587';
+                $mail->SMTPAuth = true;
+                $mail->Username = 'donotreply@gauratravel.com.au';
+                $mail->Password = 'P/738625763818ob';
+                $mail->SMTPSecure = 'tls';
+                $mail->From = 'donotreply@gauratravel.com.au';
+                $mail->FromName = 'Gaura Travel';
+                $mail->AddAddress('leen@gauratravel.com.au', "Passenger");
+                $mail->WordWrap = 50;
+                $mail->IsHTML(true);
+                $mail->Subject = 'IT issue - ' . $ticket['auto_id'];
+                $mail->Body = $mailbody;
+                $mail->Send();
+            }
+
+            sendResponse('success', ['message' => 'Status updated successfully'], 'Status updated successfully');
+        }
+
+        // PATCH /v1/it-support/tickets/{ticket_id}/move-to-it - Move ticket to IT support portal
+        if ($method === 'PATCH' && $ticket_id !== null && $action === 'move-to-it') {
+            // Original Query:
+            // UPDATE wpk4_backend_it_support_ticket_portal 
+            // SET sub_status = NULL, 
+            //     updated_at = :updated_at,
+            //     updated_by = :updated_by
+            // WHERE auto_id = :ticket_id
+
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                [
+                    'sub_status' => null,
+                    'updated_at' => current_time('mysql'),
+                    'updated_by' => $current_username
+                ],
+                ['auto_id' => $ticket_id],
+                [null, '%s', '%s'],
+                ['%d']
+            );
+
+            if ($result === false) {
+                sendError('Failed to move ticket: ' . $wpdb->last_error, 500);
+            }
+
+            sendResponse('success', ['message' => 'Ticket moved to IT support portal successfully'], 'Ticket moved to IT support portal successfully');
+        }
+
+        // PATCH /v1/it-support/tickets/{ticket_id}/escalate-to-web - Escalate ticket to web
+        if ($method === 'PATCH' && $ticket_id !== null && $action === 'escalate-to-web') {
+            // Original Query:
+            // UPDATE wpk4_backend_it_support_ticket_portal 
+            // SET sub_status = 'Escalated to Web', 
+            //     updated_at = :updated_at,
+            //     updated_by = :updated_by
+            // WHERE auto_id = :ticket_id
+
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                [
+                    'sub_status' => 'Escalated to Web',
+                    'updated_at' => current_time('mysql'),
+                    'updated_by' => $current_username
+                ],
+                ['auto_id' => $ticket_id],
+                ['%s', '%s', '%s'],
+                ['%d']
+            );
+
+            if ($result === false) {
+                sendError('Failed to escalate ticket: ' . $wpdb->last_error, 500);
+            }
+
+            sendResponse('success', ['message' => 'Ticket escalated to web successfully'], 'Ticket escalated to web successfully');
+        }
+
+        // Route not found
+        sendError('Endpoint not found', 404);
+
+    } catch (Exception $e) {
+        sendError($e->getMessage(), $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500);
+    }
+}
+
+// Continue with original template code for HTML output
+get_header();
+header('Content-Type: text/html; charset=utf-8');
+
 include('wp-config-custom.php');
 include('vendor/autoload.php');
-$current_username = $current_user->user_login;
 ?>
 <head>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -60,88 +573,161 @@ $current_username = $current_user->user_login;
 
     <?php
     if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_escalation'])) {
-        $fname = $_POST['first_name'];
-        $lname = $_POST['last_name'];
-        $branch_location = $_POST['branch_location'];
-        $department = $_POST['department'];
-        $email = $_POST['email'];
-        $type = $_POST['type'];
-        $category = $_POST['category'];
-        $sub_category = $_POST['subcategory'];
-        $specification = $_POST['specification'];
+        $fname = trim($_POST['first_name']);
+        $lname = trim($_POST['last_name']);
+        $branch_location = trim($_POST['branch_location']);
+        $department = trim($_POST['department']);
+        $email = trim($_POST['email']);
+        $type = trim($_POST['type']);
+        $category = trim($_POST['category']);
+        $sub_category = isset($_POST['subcategory']) ? trim($_POST['subcategory']) : '';
+        $specification = trim($_POST['specification']);
         
-        $escalate_to = $_POST['escalate_to'];
+        $escalate_to = trim($_POST['escalate_to']);
         $current_username = $current_user->user_login;
-    $delegate_name = $_POST['delegate_name'] ?? '';
+        $delegate_name = isset($_POST['delegate_name']) ? trim($_POST['delegate_name']) : '';
 
         $existing_pnr_screenshot = '';
         if (isset($_FILES['existing_pnr_screenshot']) && $_FILES['existing_pnr_screenshot']['error'] == 0) {
-            $target_dir = "wp-content/uploads/customized_function_uploads/";
-            $existing_pnr_screenshot = $target_dir . basename($_FILES["existing_pnr_screenshot"]["name"]);
-            move_uploaded_file($_FILES["existing_pnr_screenshot"]["tmp_name"], $existing_pnr_screenshot);
+            $target_dir = $_SERVER['DOCUMENT_ROOT'] . '/wp-content/uploads/customized_function_uploads/';
+            if (!file_exists($target_dir)) {
+                wp_mkdir_p($target_dir);
+            }
+            $file_extension = pathinfo($_FILES['existing_pnr_screenshot']['name'], PATHINFO_EXTENSION);
+            $file_name = 'existing_pnr_' . time() . '_' . uniqid() . '.' . $file_extension;
+            $target_path = $target_dir . $file_name;
+            if (move_uploaded_file($_FILES['existing_pnr_screenshot']['tmp_name'], $target_path)) {
+                $existing_pnr_screenshot = 'wp-content/uploads/customized_function_uploads/' . $file_name;
+            }
         }
 
         $new_option_screenshot = '';
         if (isset($_FILES['new_option_screenshot']) && $_FILES['new_option_screenshot']['error'] == 0) {
-            $target_dir = "wp-content/uploads/customized_function_uploads/";
-            $new_option_screenshot = $target_dir . basename($_FILES["new_option_screenshot"]["name"]);
-            move_uploaded_file($_FILES["new_option_screenshot"]["tmp_name"], $new_option_screenshot);
+            $target_dir = $_SERVER['DOCUMENT_ROOT'] . '/wp-content/uploads/customized_function_uploads/';
+            if (!file_exists($target_dir)) {
+                wp_mkdir_p($target_dir);
+            }
+            $file_extension = pathinfo($_FILES['new_option_screenshot']['name'], PATHINFO_EXTENSION);
+            $file_name = 'new_option_' . time() . '_' . uniqid() . '.' . $file_extension;
+            $target_path = $target_dir . $file_name;
+            if (move_uploaded_file($_FILES['new_option_screenshot']['tmp_name'], $target_path)) {
+                $new_option_screenshot = 'wp-content/uploads/customized_function_uploads/' . $file_name;
+            }
         }
     
-$sql_insert_request = "INSERT INTO wpk4_backend_it_support_ticket_portal (
-    fname, lname, branch_location, department, email, request_type, category, sub_category, specification, existing_pnr_screenshot, new_option_screenshot, escalate_to, escalate_by, delegate_name, status
-) VALUES (
-    '$fname', '$lname', '$branch_location', '$department', '$email', '$type', '$category', '$sub_category', '$specification', '$existing_pnr_screenshot', '$new_option_screenshot', '$escalate_to', '$current_username', '$delegate_name', 'pending'
-)";
+        // Original Query:
+        // INSERT INTO wpk4_backend_it_support_ticket_portal (
+        //     fname, lname, branch_location, department, email, request_type, category, sub_category, specification, existing_pnr_screenshot, new_option_screenshot, escalate_to, escalate_by, delegate_name, status
+        // ) VALUES (
+        //     '$fname', '$lname', '$branch_location', '$department', '$email', '$type', '$category', '$sub_category', '$specification', '$existing_pnr_screenshot', '$new_option_screenshot', '$escalate_to', '$current_username', '$delegate_name', 'pending'
+        // )
 
+        $result = $wpdb->insert(
+            $wpdb->prefix . 'backend_it_support_ticket_portal',
+            [
+                'fname' => $fname,
+                'lname' => $lname,
+                'branch_location' => $branch_location,
+                'department' => $department,
+                'email' => $email,
+                'request_type' => $type,
+                'category' => $category,
+                'sub_category' => $sub_category,
+                'specification' => $specification,
+                'existing_pnr_screenshot' => $existing_pnr_screenshot,
+                'new_option_screenshot' => $new_option_screenshot,
+                'escalate_to' => $escalate_to,
+                'escalate_by' => $current_username,
+                'delegate_name' => $delegate_name,
+                'status' => 'pending'
+            ],
+            ['%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s']
+        );
     
-        if ($mysqli->query($sql_insert_request) === TRUE) {
+        if ($result !== false) {
             echo "<script>alert('Data has been saved successfully!');</script>";
         } else {
-            echo "Error: " . $sql_insert_request . "<br>" . $mysqli->error;
+            echo "Error: Failed to save data. " . $wpdb->last_error;
         }
     }
     
     if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_web_escalation'])) {
-        $fname = $_POST['first_name'];
-        $lname = $_POST['last_name'];
-        $branch_location = $_POST['branch_location'];
-        $department = $_POST['department'];
-        $email = $_POST['email'];
-        $type = $_POST['type'];
-        $category = $_POST['category'];
-        $sub_category = $_POST['subcategory'];
-        $specification = $_POST['specification'];
+        $fname = trim($_POST['first_name']);
+        $lname = trim($_POST['last_name']);
+        $branch_location = trim($_POST['branch_location']);
+        $department = trim($_POST['department']);
+        $email = trim($_POST['email']);
+        $type = trim($_POST['type']);
+        $category = trim($_POST['category']);
+        $sub_category = isset($_POST['subcategory']) ? trim($_POST['subcategory']) : '';
+        $specification = trim($_POST['specification']);
         
-        $escalate_to = $_POST['escalate_to'];
+        $escalate_to = trim($_POST['escalate_to']);
         $current_username = $current_user->user_login;
-    $delegate_name = $_POST['delegate_name'] ?? '';
+        $delegate_name = isset($_POST['delegate_name']) ? trim($_POST['delegate_name']) : '';
 
         $existing_pnr_screenshot = '';
         if (isset($_FILES['existing_pnr_screenshot']) && $_FILES['existing_pnr_screenshot']['error'] == 0) {
-            $target_dir = "wp-content/uploads/customized_function_uploads/";
-            $existing_pnr_screenshot = $target_dir . basename($_FILES["existing_pnr_screenshot"]["name"]);
-            move_uploaded_file($_FILES["existing_pnr_screenshot"]["tmp_name"], $existing_pnr_screenshot);
+            $target_dir = $_SERVER['DOCUMENT_ROOT'] . '/wp-content/uploads/customized_function_uploads/';
+            if (!file_exists($target_dir)) {
+                wp_mkdir_p($target_dir);
+            }
+            $file_extension = pathinfo($_FILES['existing_pnr_screenshot']['name'], PATHINFO_EXTENSION);
+            $file_name = 'existing_pnr_' . time() . '_' . uniqid() . '.' . $file_extension;
+            $target_path = $target_dir . $file_name;
+            if (move_uploaded_file($_FILES['existing_pnr_screenshot']['tmp_name'], $target_path)) {
+                $existing_pnr_screenshot = 'wp-content/uploads/customized_function_uploads/' . $file_name;
+            }
         }
 
         $new_option_screenshot = '';
         if (isset($_FILES['new_option_screenshot']) && $_FILES['new_option_screenshot']['error'] == 0) {
-            $target_dir = "wp-content/uploads/customized_function_uploads/";
-            $new_option_screenshot = $target_dir . basename($_FILES["new_option_screenshot"]["name"]);
-            move_uploaded_file($_FILES["new_option_screenshot"]["tmp_name"], $new_option_screenshot);
+            $target_dir = $_SERVER['DOCUMENT_ROOT'] . '/wp-content/uploads/customized_function_uploads/';
+            if (!file_exists($target_dir)) {
+                wp_mkdir_p($target_dir);
+            }
+            $file_extension = pathinfo($_FILES['new_option_screenshot']['name'], PATHINFO_EXTENSION);
+            $file_name = 'new_option_' . time() . '_' . uniqid() . '.' . $file_extension;
+            $target_path = $target_dir . $file_name;
+            if (move_uploaded_file($_FILES['new_option_screenshot']['tmp_name'], $target_path)) {
+                $new_option_screenshot = 'wp-content/uploads/customized_function_uploads/' . $file_name;
+            }
         }
      
-        $sql_insert_request = "INSERT INTO wpk4_backend_it_support_ticket_portal (
-            fname, lname, branch_location, department, email, request_type, category, sub_category, specification, existing_pnr_screenshot, new_option_screenshot, escalate_to, escalate_by, delegate_name, status, sub_status
-        ) VALUES (
-            '$fname', '$lname', '$branch_location', '$department', '$email', '$type', '$category', '$sub_category', '$specification', '$existing_pnr_screenshot', '$new_option_screenshot', '$escalate_to', '$current_username', '$delegate_name', 'pending', 'Escalated to Web'
-        )";
+        // Original Query:
+        // INSERT INTO wpk4_backend_it_support_ticket_portal (
+        //     fname, lname, branch_location, department, email, request_type, category, sub_category, specification, existing_pnr_screenshot, new_option_screenshot, escalate_to, escalate_by, delegate_name, status, sub_status
+        // ) VALUES (
+        //     '$fname', '$lname', '$branch_location', '$department', '$email', '$type', '$category', '$sub_category', '$specification', '$existing_pnr_screenshot', '$new_option_screenshot', '$escalate_to', '$current_username', '$delegate_name', 'pending', 'Escalated to Web'
+        // )
 
+        $result = $wpdb->insert(
+            $wpdb->prefix . 'backend_it_support_ticket_portal',
+            [
+                'fname' => $fname,
+                'lname' => $lname,
+                'branch_location' => $branch_location,
+                'department' => $department,
+                'email' => $email,
+                'request_type' => $type,
+                'category' => $category,
+                'sub_category' => $sub_category,
+                'specification' => $specification,
+                'existing_pnr_screenshot' => $existing_pnr_screenshot,
+                'new_option_screenshot' => $new_option_screenshot,
+                'escalate_to' => $escalate_to,
+                'escalate_by' => $current_username,
+                'delegate_name' => $delegate_name,
+                'status' => 'pending',
+                'sub_status' => 'Escalated to Web'
+            ],
+            ['%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s']
+        );
     
-        if ($mysqli->query($sql_insert_request) === TRUE) {
+        if ($result !== false) {
             echo "<script>alert('Data has been saved successfully!');</script>";
         } else {
-            echo "Error: " . $sql_insert_request . "<br>" . $mysqli->error;
+            echo "Error: Failed to save data. " . $wpdb->last_error;
         }
     }
     ?>
@@ -161,8 +747,8 @@ $sql_insert_request = "INSERT INTO wpk4_backend_it_support_ticket_portal (
 			$rowf = mysqli_num_rows($resultg);
 			if($rowf==1)
 			{
-				$sql_update_status = "UPDATE wpk4_backend_travel_bookings SET t_type='return' WHERE order_id='$order_id'";
-				$result_status = mysqli_query($mysqli,$sql_update_status) or die(mysqli_error());
+			$sql_update_status = "UPDATE wpk4_backend_travel_bookings SET t_type='return' WHERE order_id='$order_id'";
+			$result_status = mysqli_query($mysqli,$sql_update_status) or die(mysqli_error($mysqli));
 			}
 		}
 		?>
@@ -363,14 +949,103 @@ $sql_insert_request = "INSERT INTO wpk4_backend_it_support_ticket_portal (
                             $categories[] = $row['category'];
                         }
 
-                        $query_subcategories = "SELECT category, subcategory FROM wpk4_backend_it_support_ticket_portal_categories";
+                        // Set charset to UTF-8 for proper encoding
+                        if (isset($mysqli) && $mysqli) {
+                            mysqli_set_charset($mysqli, "utf8mb4");
+                        }
+                        
+                        $query_subcategories = "SELECT category, subcategory FROM wpk4_backend_it_support_ticket_portal_categories ORDER BY category, subcategory";
+                        
+                        // Debug: Check database connection
+                        if (!isset($mysqli) || !$mysqli) {
+                            error_log("ERROR: mysqli connection not available");
+                            echo "<!-- DEBUG: mysqli connection not available -->";
+                        }
+                        
+                        // Display query result on page for debugging (remove after fixing)
+                        $debug_info = [];
+                        $debug_info[] = "Query: " . $query_subcategories;
+                        
                         $result_subcategories = mysqli_query($mysqli, $query_subcategories);
 
                         $subcategories = [];
-                        while ($row = mysqli_fetch_assoc($result_subcategories)) {
-                            $subcategories[$row['category']][] = $row['subcategory'];
+                        if ($result_subcategories) {
+                            $row_count = 0;
+                            while ($row = mysqli_fetch_assoc($result_subcategories)) {
+                                // Trim whitespace from category and subcategory
+                                $category = trim($row['category']);
+                                $subcategory = trim($row['subcategory']);
+                                
+                                // Clean UTF-8 encoding issues and fix common character problems
+                                $category = mb_convert_encoding($category, 'UTF-8', 'UTF-8');
+                                $category = iconv('UTF-8', 'UTF-8//IGNORE', $category);
+                                // Fix common encoding issues (apostrophes, quotes) - including question mark replacement
+                                $category = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $category);
+                                
+                                $subcategory = mb_convert_encoding($subcategory, 'UTF-8', 'UTF-8');
+                                $subcategory = iconv('UTF-8', 'UTF-8//IGNORE', $subcategory);
+                                // Fix common encoding issues (apostrophes, quotes) - including question mark replacement
+                                $subcategory = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $subcategory);
+                                
+                                if (!empty($category) && !empty($subcategory)) {
+                                    // Ensure array exists for this category
+                                    if (!isset($subcategories[$category])) {
+                                        $subcategories[$category] = [];
+                                    }
+                                    // Add subcategory if not already present (avoid duplicates)
+                                    if (!in_array($subcategory, $subcategories[$category])) {
+                                        $subcategories[$category][] = $subcategory;
+                                    }
+                                    $row_count++;
+                                }
+                            }
+                            $debug_info[] = "Query successful. Found {$row_count} rows.";
+                            error_log("Subcategories query successful. Found {$row_count} rows.");
+                            if ($row_count > 0) {
+                                $debug_info[] = "Categories found: " . implode(", ", array_keys($subcategories));
+                                error_log("Subcategories array: " . print_r($subcategories, true));
+                            } else {
+                                error_log("WARNING: Query returned 0 rows. Table may be empty or columns don't match.");
+                                // Test query to check table structure
+                                $test_query = "SHOW COLUMNS FROM wpk4_backend_it_support_ticket_portal_categories";
+                                $test_result = mysqli_query($mysqli, $test_query);
+                                if ($test_result) {
+                                    $columns = [];
+                                    while ($col = mysqli_fetch_assoc($test_result)) {
+                                        $columns[] = $col['Field'];
+                                    }
+                                    error_log("Table columns: " . implode(", ", $columns));
+                                }
+                                // Also check if table exists and has data
+                                $count_query = "SELECT COUNT(*) as total FROM wpk4_backend_it_support_ticket_portal_categories";
+                                $count_result = mysqli_query($mysqli, $count_query);
+                                if ($count_result) {
+                                    $count_row = mysqli_fetch_assoc($count_result);
+                                    error_log("Total rows in table: " . $count_row['total']);
+                                }
+                            }
+                        } else {
+                            $error_msg = "Subcategories query failed: " . mysqli_error($mysqli);
+                            $debug_info[] = "ERROR: " . $error_msg;
+                            error_log($error_msg);
+                            echo "<!-- DEBUG: {$error_msg} -->";
                         }
                         
+                        // Display debug info on page (temporary - remove after fixing)
+                        if (isset($_GET['debug_subcategories'])) {
+                            $error_log_path = ini_get('error_log');
+                            echo '<div style="position:fixed;bottom:10px;right:10px;background:#fff;border:2px solid red;padding:15px;z-index:99999;max-width:500px;max-height:400px;overflow:auto;font-size:12px;">';
+                            echo '<strong>Subcategories Debug Info:</strong><br>';
+                            echo '<pre>' . print_r($debug_info, true) . '</pre>';
+                            echo '<strong>Subcategories Array:</strong><br>';
+                            echo '<pre>' . print_r($subcategories, true) . '</pre>';
+                            echo '<strong>Error Log Location:</strong><br>';
+                            echo '<pre>' . ($error_log_path ?: 'Not set in php.ini') . '</pre>';
+                            echo '<strong>PHP Error Log Setting:</strong><br>';
+                            echo '<pre>log_errors: ' . (ini_get('log_errors') ? 'On' : 'Off') . '</pre>';
+                            echo '<pre>error_log: ' . ($error_log_path ?: 'Default system log') . '</pre>';
+                            echo '</div>';
+                        }
                         
                     ?>
 
@@ -398,11 +1073,6 @@ $sql_insert_request = "INSERT INTO wpk4_backend_it_support_ticket_portal (
                         <label for="subcategory">Subcategory:</label>
                         <select id="subcategory" name="subcategory" style="width:100%; padding:10px;">
                             <option value="">Select Subcategory</option>
-                            <?php if (isset($subcategories) && isset($subcategories[$row]) && isset($subcategories[$row['category']])): ?>
-                                <?php foreach ($subcategories[$row['category']] as $subcategory): ?>
-                                    <option value="<?php echo htmlspecialchars($subcategory); ?>"><?php echo htmlspecialchars($subcategory); ?></option>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
                         </select>
                     </div>
 
@@ -457,64 +1127,238 @@ $sql_insert_request = "INSERT INTO wpk4_backend_it_support_ticket_portal (
                     allowInput: true,
                 });
             });
-            
-            // // PHP array converted to JavaScript object
-            
-            var subcategories = JSON.parse(<?php echo json_encode($subcategories["Desktop Support"]); ?>);
-            console.log(subcategories);
-            // function updateSubcategories() {
-            //     var categorySelect = document.getElementById("category");
-            //     var subcategorySelect = document.getElementById("subcategory");
-                
-            //     var selectedCategory = categorySelect.value;
-                
-            //     // Clear existing subcategory options
-            //     subcategorySelect.innerHTML = '<option value="">Select Subcategory</option>';
-                
-            //     // Check if the selected category exists in the subcategories object
-            //     if (subcategories[selectedCategory]) {
-            //         subcategories[selectedCategory].forEach(function(subcategory) {
-            //             var option = document.createElement("option");
-            //             option.value = subcategory;
-            //             option.textContent = subcategory;
-            //             subcategorySelect.appendChild(option);
-            //         });
-            //     }
-            // }
         </script>
         <?php
-            
-            $query = "SELECT category, subcategory FROM wpk4_backend_it_support_ticket_portal_categories";
-            $result = mysqli_query($mysqli, $query);
-
-            $categories = [];
-            while ($row = mysqli_fetch_assoc($result)) {
-                $categories[$row['category']][] = $row['subcategory'];
+        // Ensure subcategories is available for JavaScript
+        if (!isset($subcategories) || !is_array($subcategories)) {
+            $query_subcategories = "SELECT category, subcategory FROM wpk4_backend_it_support_ticket_portal_categories ORDER BY category, subcategory";
+            $result_subcategories = mysqli_query($mysqli, $query_subcategories);
+            $subcategories = [];
+            if ($result_subcategories) {
+                $row_count = 0;
+                while ($row = mysqli_fetch_assoc($result_subcategories)) {
+                    // Trim whitespace from category and subcategory
+                    $category = trim($row['category']);
+                    $subcategory = trim($row['subcategory']);
+                    
+                    // Clean UTF-8 encoding issues and fix common character problems
+                    $category = mb_convert_encoding($category, 'UTF-8', 'UTF-8');
+                    $category = iconv('UTF-8', 'UTF-8//IGNORE', $category);
+                    // Fix common encoding issues (apostrophes, quotes)
+                    $category = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $category);
+                    
+                    $subcategory = mb_convert_encoding($subcategory, 'UTF-8', 'UTF-8');
+                    $subcategory = iconv('UTF-8', 'UTF-8//IGNORE', $subcategory);
+                    // Fix common encoding issues (apostrophes, quotes)
+                    $subcategory = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $subcategory);
+                    
+                    if (!empty($category) && !empty($subcategory)) {
+                        // Ensure array exists for this category
+                        if (!isset($subcategories[$category])) {
+                            $subcategories[$category] = [];
+                        }
+                        // Add subcategory if not already present (avoid duplicates)
+                        if (!in_array($subcategory, $subcategories[$category])) {
+                            $subcategories[$category][] = $subcategory;
+                        }
+                        $row_count++;
+                    }
+                }
+                error_log("Subcategories query (JS fallback) successful. Found {$row_count} rows.");
+            } else {
+                $error_msg = "Subcategories query (JS fallback) failed: " . mysqli_error($mysqli);
+                error_log($error_msg);
+                echo "<!-- DEBUG: {$error_msg} -->";
             }
+        }
+        
+        // Debug output
+        $subcategories_count = is_array($subcategories) ? count($subcategories) : 0;
+        error_log("Final subcategories count before JSON: {$subcategories_count}");
+        
+        // Clean UTF-8 encoding issues before JSON encoding
+        $cleaned_subcategories = [];
+        if (is_array($subcategories)) {
+            foreach ($subcategories as $category => $subcats) {
+                // Clean category name
+                $clean_category = mb_convert_encoding($category, 'UTF-8', 'UTF-8');
+                $clean_category = iconv('UTF-8', 'UTF-8//IGNORE', $clean_category);
+                
+                $cleaned_subcategories[$clean_category] = [];
+                foreach ($subcats as $subcat) {
+                    // Clean subcategory name
+                    $clean_subcat = mb_convert_encoding($subcat, 'UTF-8', 'UTF-8');
+                    $clean_subcat = iconv('UTF-8', 'UTF-8//IGNORE', $clean_subcat);
+                    // Remove any remaining invalid UTF-8 characters
+                    $clean_subcat = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $clean_subcat);
+                    // Fix common encoding issues (apostrophes, quotes) - including question mark replacement
+                    $clean_subcat = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $clean_subcat);
+                    if (!empty($clean_subcat)) {
+                        $cleaned_subcategories[$clean_category][] = $clean_subcat;
+                    }
+                }
+            }
+        }
+        
+        // Try encoding with different options
+        $subcategories_json = json_encode($cleaned_subcategories ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $json_error = json_last_error();
+        
+        if ($json_error !== JSON_ERROR_NONE) {
+            error_log("JSON encode error: " . json_last_error_msg());
+            // Try with JSON_INVALID_UTF8_IGNORE flag (PHP 7.2+)
+            if (defined('JSON_INVALID_UTF8_IGNORE')) {
+                $subcategories_json = json_encode($cleaned_subcategories ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_IGNORE);
+                $json_error = json_last_error();
+            }
+            
+            if ($json_error !== JSON_ERROR_NONE) {
+                error_log("JSON encode error (second attempt): " . json_last_error_msg());
+                // Last resort: manually build JSON string
+                $subcategories_json = '{';
+                $first_cat = true;
+                foreach ($cleaned_subcategories as $cat => $subs) {
+                    if (!$first_cat) $subcategories_json .= ',';
+                    $first_cat = false;
+                    $subcategories_json .= json_encode($cat, JSON_UNESCAPED_UNICODE) . ':[';
+                    $first_sub = true;
+                    foreach ($subs as $sub) {
+                        if (!$first_sub) $subcategories_json .= ',';
+                        $first_sub = false;
+                        $subcategories_json .= json_encode($sub, JSON_UNESCAPED_UNICODE);
+                    }
+                    $subcategories_json .= ']';
+                }
+                $subcategories_json .= '}';
+            }
+        }
+        
+        error_log("Subcategories JSON length: " . strlen($subcategories_json));
+        error_log("Subcategories JSON preview: " . substr($subcategories_json, 0, 200));
         ?>
+        <!-- DEBUG: Subcategories PHP Data -->
+        <?php if (isset($subcategories) && is_array($subcategories)): ?>
+            <!-- DEBUG: Found <?php echo count($subcategories); ?> categories -->
+            <?php foreach ($subcategories as $cat => $subs): ?>
+                <!-- DEBUG: Category "<?php echo htmlspecialchars($cat); ?>" has <?php echo count($subs); ?> subcategories -->
+            <?php endforeach; ?>
+        <?php else: ?>
+            <!-- DEBUG: $subcategories is not set or not an array -->
+        <?php endif; ?>
         <script>
             document.addEventListener("DOMContentLoaded", function() {
-                var subcategories = <?php echo json_encode($subcategories); ?>;
+                var subcategories = <?php echo $subcategories_json; ?>;
+                
+                console.log("=== SUBCATEGORIES DEBUG ===");
+                console.log("Subcategories raw data:", subcategories);
+                console.log("Subcategories type:", typeof subcategories);
+                console.log("Subcategories is array:", Array.isArray(subcategories));
+                console.log("Subcategories is object:", typeof subcategories === 'object' && subcategories !== null);
+                console.log("Subcategories keys:", Object.keys(subcategories || {}));
+                console.log("Subcategories JSON string:", JSON.stringify(subcategories));
+                console.log("Subcategories count:", subcategories ? Object.keys(subcategories).length : 0);
+                
+                // Display in page for debugging
+                if (!subcategories || Object.keys(subcategories).length === 0) {
+                    console.error("WARNING: Subcategories object is empty!");
+                    var debugDiv = document.createElement('div');
+                    debugDiv.style.cssText = 'position:fixed;top:10px;right:10px;background:red;color:white;padding:10px;z-index:99999;max-width:300px;';
+                    debugDiv.innerHTML = 'DEBUG: No subcategories data found.<br>Check browser console and server error logs.';
+                    document.body.appendChild(debugDiv);
+                }
                 
                 var categorySelect = document.getElementById("category");
                 var subcategorySelect = document.getElementById("subcategory");
 
+                if (!categorySelect) {
+                    console.error("Category select element not found");
+                    return;
+                }
+                
+                if (!subcategorySelect) {
+                    console.error("Subcategory select element not found");
+                    return;
+                }
+
+                console.log("Category select value:", categorySelect.value);
+                console.log("Category select options:", Array.from(categorySelect.options).map(opt => opt.value));
+
                 function updateSubcategories() {
                     var selectedCategory = categorySelect.value;
-                    var options = subcategories[selectedCategory] || [];
+                    console.log("=== UPDATE SUBCATEGORIES ===");
+                    console.log("Selected category (raw):", selectedCategory);
+                    console.log("Selected category (trimmed):", selectedCategory ? selectedCategory.trim() : '');
+                    console.log("Selected category length:", selectedCategory ? selectedCategory.length : 0);
+                    
+                    if (!subcategories || typeof subcategories !== 'object') {
+                        console.error("Subcategories is not an object:", subcategories);
+                        subcategorySelect.innerHTML = '<option value="">Select Subcategory</option>';
+                        return;
+                    }
+                    
+                    // Always trim the selected category for matching
+                    var trimmedCategory = selectedCategory ? selectedCategory.trim() : '';
+                    
+                    // Try exact match first
+                    var options = subcategories[trimmedCategory] || [];
+                    console.log("Exact match result for '" + trimmedCategory + "':", options.length, "options");
+                    
+                    // If no match, try case-insensitive search
+                    if (options.length === 0 && trimmedCategory) {
+                        var categoryKeys = Object.keys(subcategories);
+                        console.log("Trying case-insensitive match. Available keys:", categoryKeys);
+                        for (var i = 0; i < categoryKeys.length; i++) {
+                            if (categoryKeys[i].toLowerCase() === trimmedCategory.toLowerCase()) {
+                                options = subcategories[categoryKeys[i]];
+                                console.log("Found case-insensitive match:", categoryKeys[i], "->", options.length, "options");
+                                break;
+                            }
+                        }
+                    }
+                    
+                    console.log("Final options for category '" + trimmedCategory + "':", options);
+                    console.log("Options count:", options.length);
+                    console.log("All available category keys:", Object.keys(subcategories));
 
+                    // Clear and reset subcategory select
                     subcategorySelect.innerHTML = '<option value="">Select Subcategory</option>';
 
-                    options.forEach(function(option) {
-                        var optionElement = document.createElement("option");
-                        optionElement.value = option;
-                        optionElement.textContent = option;
-                        subcategorySelect.appendChild(optionElement);
+                    if (options.length === 0) {
+                        console.warn("⚠️ No subcategories found for category:", trimmedCategory);
+                        console.log("Available categories in subcategories object:", Object.keys(subcategories));
+                        console.log("Selected category matches any key?", Object.keys(subcategories).includes(trimmedCategory));
+                    } else {
+                        console.log("✅ Adding " + options.length + " subcategory options");
+                    }
+
+                    // Add subcategory options
+                    options.forEach(function(option, index) {
+                        if (option && String(option).trim() !== '') {
+                            var optionElement = document.createElement("option");
+                            var optionValue = String(option).trim();
+                            optionElement.value = optionValue;
+                            optionElement.textContent = optionValue;
+                            subcategorySelect.appendChild(optionElement);
+                            if (index < 5) { // Only log first 5 to avoid console spam
+                                console.log("Added subcategory " + (index + 1) + ":", optionValue);
+                            }
+                        } else {
+                            console.warn("Skipping empty subcategory option:", option);
+                        }
                     });
+                    
+                    if (options.length > 5) {
+                        console.log("... and " + (options.length - 5) + " more subcategories");
+                    }
+                    
+                    var finalOptions = Array.from(subcategorySelect.options);
+                    console.log("✅ Final subcategory select has", finalOptions.length, "options");
+                    console.log("First 5 options:", finalOptions.slice(0, 6).map(opt => opt.value));
                 }
 
                 categorySelect.addEventListener("change", updateSubcategories);
 
+                // Initialize subcategories on page load
                 updateSubcategories();
             });
 </script>
@@ -1291,14 +2135,44 @@ try {
                             $categories[] = $row['category'];
                         }
 
-                        $query_subcategories = "SELECT category, subcategory FROM wpk4_backend_it_support_ticket_portal_categories";
+                        $query_subcategories = "SELECT category, subcategory FROM wpk4_backend_it_support_ticket_portal_categories ORDER BY category, subcategory";
                         $result_subcategories = mysqli_query($mysqli, $query_subcategories);
 
                         $subcategories = [];
-                        while ($row = mysqli_fetch_assoc($result_subcategories)) {
-                            $subcategories[$row['category']][] = $row['subcategory'];
+                        if ($result_subcategories) {
+                            while ($row = mysqli_fetch_assoc($result_subcategories)) {
+                                // Trim whitespace from category and subcategory
+                                $category = trim($row['category']);
+                                $subcategory = trim($row['subcategory']);
+                                
+                                // Clean UTF-8 encoding issues and fix common character problems
+                                $category = mb_convert_encoding($category, 'UTF-8', 'UTF-8');
+                                $category = iconv('UTF-8', 'UTF-8//IGNORE', $category);
+                                // Fix common encoding issues (apostrophes, quotes) - including question mark replacement
+                                $category = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $category);
+                                
+                                $subcategory = mb_convert_encoding($subcategory, 'UTF-8', 'UTF-8');
+                                $subcategory = iconv('UTF-8', 'UTF-8//IGNORE', $subcategory);
+                                // Fix common encoding issues (apostrophes, quotes) - including question mark replacement
+                                $subcategory = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $subcategory);
+                                
+                                if (!empty($category) && !empty($subcategory)) {
+                                    // Ensure array exists for this category
+                                    if (!isset($subcategories[$category])) {
+                                        $subcategories[$category] = [];
+                                    }
+                                    // Add subcategory if not already present (avoid duplicates)
+                                    if (!in_array($subcategory, $subcategories[$category])) {
+                                        $subcategories[$category][] = $subcategory;
+                                    }
+                                }
+                            }
+                        } else {
+                            error_log("Subcategories query error (Web Escalation): " . mysqli_error($mysqli));
                         }
                         
+                        // Debug: Log subcategories data
+                        error_log("Subcategories data (Web Escalation): " . print_r($subcategories, true));
                         
                     ?>
 
@@ -1326,11 +2200,6 @@ try {
                         <label for="subcategory">Subcategory:</label>
                         <select id="subcategory" name="subcategory" style="width:100%; padding:10px;">
                             <option value="">Select Subcategory</option>
-                            <?php if (isset($subcategories) && isset($subcategories[$row]) && isset($subcategories[$row['category']])): ?>
-                                <?php foreach ($subcategories[$row['category']] as $subcategory): ?>
-                                    <option value="<?php echo htmlspecialchars($subcategory); ?>"><?php echo htmlspecialchars($subcategory); ?></option>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
                         </select>
                     </div>
 
@@ -1385,64 +2254,166 @@ try {
                     allowInput: true,
                 });
             });
-            
-            // // PHP array converted to JavaScript object
-            
-            var subcategories = JSON.parse(<?php echo json_encode($subcategories["Desktop Support"]); ?>);
-            console.log(subcategories);
-            // function updateSubcategories() {
-            //     var categorySelect = document.getElementById("category");
-            //     var subcategorySelect = document.getElementById("subcategory");
-                
-            //     var selectedCategory = categorySelect.value;
-                
-            //     // Clear existing subcategory options
-            //     subcategorySelect.innerHTML = '<option value="">Select Subcategory</option>';
-                
-            //     // Check if the selected category exists in the subcategories object
-            //     if (subcategories[selectedCategory]) {
-            //         subcategories[selectedCategory].forEach(function(subcategory) {
-            //             var option = document.createElement("option");
-            //             option.value = subcategory;
-            //             option.textContent = subcategory;
-            //             subcategorySelect.appendChild(option);
-            //         });
-            //     }
-            // }
         </script>
         <?php
-            
-            $query = "SELECT category, subcategory FROM wpk4_backend_it_support_ticket_portal_categories";
-            $result = mysqli_query($mysqli, $query);
-
-            $categories = [];
-            while ($row = mysqli_fetch_assoc($result)) {
-                $categories[$row['category']][] = $row['subcategory'];
+        // Ensure subcategories is available for JavaScript (Web Escalation)
+        if (!isset($subcategories) || !is_array($subcategories)) {
+            $query_subcategories = "SELECT category, subcategory FROM wpk4_backend_it_support_ticket_portal_categories";
+            $result_subcategories = mysqli_query($mysqli, $query_subcategories);
+            $subcategories = [];
+            if ($result_subcategories) {
+                while ($row = mysqli_fetch_assoc($result_subcategories)) {
+                    // Trim and clean UTF-8 encoding issues
+                    $category = trim($row['category']);
+                    $subcategory = trim($row['subcategory']);
+                    
+                    // Clean UTF-8 encoding issues and fix common character problems
+                    $category = mb_convert_encoding($category, 'UTF-8', 'UTF-8');
+                    $category = iconv('UTF-8', 'UTF-8//IGNORE', $category);
+                    // Fix common encoding issues (apostrophes, quotes)
+                    $category = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $category);
+                    
+                    $subcategory = mb_convert_encoding($subcategory, 'UTF-8', 'UTF-8');
+                    $subcategory = iconv('UTF-8', 'UTF-8//IGNORE', $subcategory);
+                    // Fix common encoding issues (apostrophes, quotes)
+                    $subcategory = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $subcategory);
+                    
+                    if (!empty($category) && !empty($subcategory)) {
+                        if (!isset($subcategories[$category])) {
+                            $subcategories[$category] = [];
+                        }
+                        if (!in_array($subcategory, $subcategories[$category])) {
+                            $subcategories[$category][] = $subcategory;
+                        }
+                    }
+                }
             }
+        }
+        
+        // Clean UTF-8 encoding issues before JSON encoding
+        $cleaned_subcategories = [];
+        if (is_array($subcategories)) {
+            foreach ($subcategories as $category => $subcats) {
+                // Clean category name
+                $clean_category = mb_convert_encoding($category, 'UTF-8', 'UTF-8');
+                $clean_category = iconv('UTF-8', 'UTF-8//IGNORE', $clean_category);
+                
+                $cleaned_subcategories[$clean_category] = [];
+                foreach ($subcats as $subcat) {
+                    // Clean subcategory name
+                    $clean_subcat = mb_convert_encoding($subcat, 'UTF-8', 'UTF-8');
+                    $clean_subcat = iconv('UTF-8', 'UTF-8//IGNORE', $clean_subcat);
+                    // Remove any remaining invalid UTF-8 characters
+                    $clean_subcat = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $clean_subcat);
+                    // Fix common encoding issues (apostrophes, quotes) - including question mark replacement
+                    $clean_subcat = str_replace(['', '', '', '?'], ["'", "'", '"', "'"], $clean_subcat);
+                    if (!empty($clean_subcat)) {
+                        $cleaned_subcategories[$clean_category][] = $clean_subcat;
+                    }
+                }
+            }
+        }
+        
+        // Try encoding with different options
+        $subcategories_json = json_encode($cleaned_subcategories ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $json_error = json_last_error();
+        
+        if ($json_error !== JSON_ERROR_NONE) {
+            error_log("JSON encode error (Web Escalation): " . json_last_error_msg());
+            // Try with JSON_INVALID_UTF8_IGNORE flag (PHP 7.2+)
+            if (defined('JSON_INVALID_UTF8_IGNORE')) {
+                $subcategories_json = json_encode($cleaned_subcategories ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_IGNORE);
+                $json_error = json_last_error();
+            }
+            
+            if ($json_error !== JSON_ERROR_NONE) {
+                error_log("JSON encode error (Web Escalation, second attempt): " . json_last_error_msg());
+                // Last resort: manually build JSON string
+                $subcategories_json = '{';
+                $first_cat = true;
+                foreach ($cleaned_subcategories as $cat => $subs) {
+                    if (!$first_cat) $subcategories_json .= ',';
+                    $first_cat = false;
+                    $subcategories_json .= json_encode($cat, JSON_UNESCAPED_UNICODE) . ':[';
+                    $first_sub = true;
+                    foreach ($subs as $sub) {
+                        if (!$first_sub) $subcategories_json .= ',';
+                        $first_sub = false;
+                        $subcategories_json .= json_encode($sub, JSON_UNESCAPED_UNICODE);
+                    }
+                    $subcategories_json .= ']';
+                }
+                $subcategories_json .= '}';
+            }
+        }
+        
+        error_log("Subcategories JSON length (Web Escalation): " . strlen($subcategories_json));
         ?>
         <script>
             document.addEventListener("DOMContentLoaded", function() {
-                var subcategories = <?php echo json_encode($subcategories); ?>;
+                var subcategories = <?php echo $subcategories_json; ?>;
+                
+                console.log("Subcategories data (Web Escalation):", subcategories);
+                console.log("Subcategories type (Web Escalation):", typeof subcategories);
+                console.log("Subcategories keys (Web Escalation):", Object.keys(subcategories || {}));
                 
                 var categorySelect = document.getElementById("category");
                 var subcategorySelect = document.getElementById("subcategory");
 
+                if (!categorySelect) {
+                    console.error("Category select element not found (Web Escalation)");
+                    return;
+                }
+                
+                if (!subcategorySelect) {
+                    console.error("Subcategory select element not found (Web Escalation)");
+                    return;
+                }
+
+                console.log("Category select value (Web Escalation):", categorySelect.value);
+                console.log("Category select options (Web Escalation):", Array.from(categorySelect.options).map(opt => opt.value));
+
                 function updateSubcategories() {
                     var selectedCategory = categorySelect.value;
+                    console.log("Updating subcategories for category (Web Escalation):", selectedCategory);
+                    
+                    if (!subcategories || typeof subcategories !== 'object') {
+                        console.error("Subcategories is not an object (Web Escalation):", subcategories);
+                        subcategorySelect.innerHTML = '<option value="">Select Subcategory</option>';
+                        return;
+                    }
+                    
                     var options = subcategories[selectedCategory] || [];
+                    console.log("Found options for category '" + selectedCategory + "' (Web Escalation):", options);
 
                     subcategorySelect.innerHTML = '<option value="">Select Subcategory</option>';
 
-                    options.forEach(function(option) {
-                        var optionElement = document.createElement("option");
-                        optionElement.value = option;
-                        optionElement.textContent = option;
-                        subcategorySelect.appendChild(optionElement);
+                    if (options.length === 0) {
+                        console.warn("No subcategories found for category (Web Escalation):", selectedCategory);
+                        console.log("Available categories in subcategories object (Web Escalation):", Object.keys(subcategories));
+                        console.log("Full subcategories object (Web Escalation):", subcategories);
+                    } else {
+                        console.log("Adding " + options.length + " subcategory options (Web Escalation)");
+                    }
+
+                    options.forEach(function(option, index) {
+                        if (option && String(option).trim() !== '') {
+                            var optionElement = document.createElement("option");
+                            optionElement.value = String(option);
+                            optionElement.textContent = String(option);
+                            subcategorySelect.appendChild(optionElement);
+                            console.log("Added subcategory option " + (index + 1) + " (Web Escalation):", option);
+                        } else {
+                            console.warn("Skipping empty subcategory option (Web Escalation):", option);
+                        }
                     });
+                    
+                    console.log("Final subcategory select options (Web Escalation):", Array.from(subcategorySelect.options).map(opt => opt.value + ": " + opt.text));
                 }
 
                 categorySelect.addEventListener("change", updateSubcategories);
 
+                // Initialize subcategories on page load
                 updateSubcategories();
             });
 </script>
@@ -2131,32 +3102,48 @@ document.addEventListener("DOMContentLoaded", function() {
     }
     if (isset($_POST['update-status'])) 
     {
-        global $mysqli;
-        $request_id = $_POST['request_id'] ?? '';
-        if(isset($request_id) && $request_id != '')
+        $request_id = isset($_POST['request_id']) ? intval($_POST['request_id']) : 0;
+        if($request_id > 0)
         {
-            $new_status = $_POST['status-select'] ?? 'Pending';
-            $new_priority = $_POST['priority-select'] ?? 'Low';
-            $new_delegate = $_POST['delegate-select'] ?? '';
+            $new_status = isset($_POST['status-select']) ? trim($_POST['status-select']) : 'Pending';
+            $new_priority = isset($_POST['priority-select']) ? trim($_POST['priority-select']) : 'Low';
+            $new_delegate = isset($_POST['delegate-select']) ? trim($_POST['delegate-select']) : '';
 
-          $update_query = "UPDATE wpk4_backend_it_support_ticket_portal 
-                 SET status = '$new_status', 
-                     priority = '$new_priority', 
-                     delegate_name = '$new_delegate',
-                     updated_by = '$current_username'
-                 WHERE auto_id = '$request_id'";
+            // Original Query:
+            // UPDATE wpk4_backend_it_support_ticket_portal 
+            // SET status = :status, 
+            //     priority = :priority, 
+            //     delegate_name = :delegate_name,
+            //     updated_by = :updated_by
+            // WHERE auto_id = :ticket_id
 
-            if (mysqli_query($mysqli, $update_query)) 
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                [
+                    'status' => $new_status,
+                    'priority' => $new_priority,
+                    'delegate_name' => $new_delegate,
+                    'updated_by' => $current_username
+                ],
+                ['auto_id' => $request_id],
+                ['%s', '%s', '%s', '%s'],
+                ['%d']
+            );
+
+            if ($result !== false) 
             {
                 if($new_status == 'Awaiting HO' || $new_status == 'Escalated to HO')
                 {
-                    $query = "SELECT *
-                            FROM wpk4_backend_it_support_ticket_portal
-                            where 
-                                auto_id = '$request_id'
-                            ";
-                    $result = mysqli_query($mysqli, $query) or die(mysqli_error($mysqli));
-                    $row = mysqli_fetch_assoc($result);
+                    // Original Query:
+                    // SELECT * FROM wpk4_backend_it_support_ticket_portal WHERE auto_id = :request_id
+                    
+                    $row = $wpdb->get_row(
+                        $wpdb->prepare(
+                            "SELECT * FROM {$wpdb->prefix}backend_it_support_ticket_portal WHERE auto_id = %d",
+                            $request_id
+                        ),
+                        ARRAY_A
+                    );
                     
                     $mailbody = '<table class="wp-travel-wrapper" style="border:0;" width="100%" cellspacing="0" cellpadding="0">
                     	<tr>
@@ -2228,44 +3215,66 @@ document.addEventListener("DOMContentLoaded", function() {
     
     if (isset($_GET['option']) && $_GET['option'] == 'move-to-it') 
     {
-        global $mysqli;
-        $request_id = $_GET['id'] ?? '';
-        if(isset($request_id) && $request_id != '')
+        $request_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
+        if($request_id > 0)
         {
-          $update_query = "UPDATE wpk4_backend_it_support_ticket_portal 
-                 SET sub_status = NULL, 
-                    updated_at = '$current_date_and_time',
-                    updated_by = '$current_username'
-                 WHERE auto_id = '$request_id'";
-            if (mysqli_query($mysqli, $update_query)) 
+            // Original Query:
+            // UPDATE wpk4_backend_it_support_ticket_portal 
+            // SET sub_status = NULL, 
+            //     updated_at = :updated_at,
+            //     updated_by = :updated_by
+            // WHERE auto_id = :ticket_id
+
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                [
+                    'sub_status' => null,
+                    'updated_at' => $current_date_and_time,
+                    'updated_by' => $current_username
+                ],
+                ['auto_id' => $request_id],
+                [null, '%s', '%s'],
+                ['%d']
+            );
+            
+            if ($result !== false) 
             {
                 echo "<script>alert('Status updated successfully!'); window.location.href = '?option=web-dashboard';</script>";
             } else {
-                echo "<script>alert('Error updating status.');</script>";
+                echo "<script>alert('Error updating status: " . $wpdb->last_error . "');</script>";
             }
         }
     }
     
     if (isset($_GET['option']) && $_GET['option'] == 'escalate-to-web') 
     {
-        global $mysqli;
-        $request_id = $_GET['id'] ?? '';
-        if(isset($request_id) && $request_id != '')
+        $request_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
+        if($request_id > 0)
         {
-            $new_status = 'Escalated to Web';
-            $new_delegate = '';
+            // Original Query:
+            // UPDATE wpk4_backend_it_support_ticket_portal 
+            // SET sub_status = 'Escalated to Web', 
+            //     updated_at = :updated_at,
+            //     updated_by = :updated_by
+            // WHERE auto_id = :ticket_id
 
-          $update_query = "UPDATE wpk4_backend_it_support_ticket_portal 
-                 SET sub_status = '$new_status', 
-                    updated_at = '$current_date_and_time',
-                    updated_by = '$current_username'
-                 WHERE auto_id = '$request_id'";
-            //echo $update_query;
-            if (mysqli_query($mysqli, $update_query)) 
+            $result = $wpdb->update(
+                $wpdb->prefix . 'backend_it_support_ticket_portal',
+                [
+                    'sub_status' => 'Escalated to Web',
+                    'updated_at' => $current_date_and_time,
+                    'updated_by' => $current_username
+                ],
+                ['auto_id' => $request_id],
+                ['%s', '%s', '%s'],
+                ['%d']
+            );
+            
+            if ($result !== false) 
             {
                 echo "<script>alert('Status updated successfully!'); window.location.href = '?option=dashboard';</script>";
             } else {
-                echo "<script>alert('Error updating status.');</script>";
+                echo "<script>alert('Error updating status: " . $wpdb->last_error . "');</script>";
             }
         }
     }
@@ -2358,14 +3367,108 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 }
 </style>
-<script>
-document.addEventListener("DOMContentLoaded", function () {
-    const checkbox = document.getElementById("ticket_status"); // Example ID
-    if (checkbox) {
-        checkbox.checked = true; // Only sets if it exists
-    }
-});
-</script>
 
 </body>
-<?php get_footer(); ?>
+<?php 
+/**
+ * ============================================
+ * POSTMAN TEST EXAMPLES
+ * ============================================
+ * 
+ * 1. Create IT Support Ticket
+ *    Method: POST
+ *    URL: {{base_url}}/v1/it-support/tickets
+ *    Body (form-data):
+ *      - first_name: John
+ *      - last_name: Doe
+ *      - branch_location: GT-MEL
+ *      - department: Sales
+ *      - email: john.doe@example.com
+ *      - type: Desktop Support
+ *      - category: Hardware Issue
+ *      - subcategory: Keyboard (optional)
+ *      - specification: My keyboard is not working
+ *      - escalate_to: IT
+ *      - delegate_name: santanud (optional)
+ *      - existing_pnr_screenshot: [file] (optional)
+ *      - new_option_screenshot: [file] (optional)
+ * 
+ * 2. Create Web Escalation Ticket
+ *    Method: POST
+ *    URL: {{base_url}}/v1/it-support/tickets/web-escalation
+ *    Body (form-data): Same as above
+ * 
+ * 3. List IT Support Tickets
+ *    Method: GET
+ *    URL: {{base_url}}/v1/it-support/tickets?request_date=2024-01-01&problem_category=Desktop Support&department=Sales&case_id=123&status=Pending
+ *    Query Parameters (all optional):
+ *      - request_date: 2024-01-01
+ *      - problem_category: Desktop Support
+ *      - department: Sales
+ *      - case_id: 123
+ *      - status: all|Pending|Under review|Escalated to HO|Awaiting HO|Revaluation|Completed|Rejected
+ * 
+ * 4. Update Ticket Remark
+ *    Method: PATCH
+ *    URL: {{base_url}}/v1/it-support/tickets/123/remark
+ *    Body (JSON):
+ *      {
+ *        "remark": "This is an updated remark"
+ *      }
+ * 
+ * 5. Update Ticket Status
+ *    Method: PATCH
+ *    URL: {{base_url}}/v1/it-support/tickets/123/status
+ *    Body (JSON):
+ *      {
+ *        "status": "Under review",
+ *        "priority": "High",
+ *        "delegate_name": "santanud"
+ *      }
+ *    Note: All fields are optional, but at least one must be provided
+ * 
+ * 6. Move Ticket to IT Support Portal
+ *    Method: PATCH
+ *    URL: {{base_url}}/v1/it-support/tickets/123/move-to-it
+ *    Body: None
+ * 
+ * 7. Escalate Ticket to Web
+ *    Method: PATCH
+ *    URL: {{base_url}}/v1/it-support/tickets/123/escalate-to-web
+ *    Body: None
+ */
+?>
+<script>
+// Menu checkbox handling with null checks
+// Clicked outside the menu, close it
+document.addEventListener("click", function(event) {
+    var checkbox = document.getElementById('check01');
+    
+    // Add null check before accessing properties
+    if (checkbox) {
+        checkbox.checked = false;
+    }
+});
+
+document.addEventListener("DOMContentLoaded", function () {
+    const checkboxes = document.querySelectorAll('input[name="menu"]');
+
+    // Check if any checkboxes were found
+    if (checkboxes.length === 0) {
+        console.warn("No checkboxes with name='menu' found");
+        return;
+    }
+
+    checkboxes.forEach((checkbox) => {
+        checkbox.addEventListener("change", function () {
+            checkboxes.forEach((otherCheckbox) => {
+                if (otherCheckbox !== this) {
+                    otherCheckbox.checked = false;
+                }
+            });
+        });
+    });
+});
+</script>
+<?php
+get_footer(); ?>

@@ -2,17 +2,54 @@
 if (ob_get_level() == 0) ob_start();
 
 date_default_timezone_set("Australia/Melbourne");
-include("../../../../wp-config-custom.php");
 ob_start();
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
+// Load WordPress to get API_BASE_URL constant from wp-config.php
+require_once($_SERVER['DOCUMENT_ROOT'] . '/wp-load.php');
+
+// Get API base URL (should be defined in wp-config.php)
+$base_url = defined('API_BASE_URL') ? API_BASE_URL : 'https://gt1.yourbestwayhome.com.au/wp-content/themes/twentytwenty/templates-3/database_api/public/v1';
+
+// Helper function to call API
+function callAPI($url, $method = 'GET', $data = null) {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    
+    if ($method === 'POST') {
+        curl_setopt($ch, CURLOPT_POST, true);
+        if ($data) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        }
+    }
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+    
+    if ($curlError) {
+        error_log("API call failed: $curlError");
+        return ['error' => $curlError, 'http_code' => $httpCode];
+    }
+    
+    if ($httpCode === 200) {
+        return json_decode($response, true);
+    }
+    
+    error_log("API call returned HTTP $httpCode: " . substr($response, 0, 500));
+    return ['error' => 'HTTP ' . $httpCode, 'response' => $response];
+}
 
 $current_date_for_filename = date('YmdHis');
 
 // Use ECMA262 simplified ISO 8601 format (UTC with Z suffix)
-$timezone = new DateTimeZone('Australia/Melbourne');
+$timezone = new DateTimeZone('Australia/Sydney');
 $yesterday_start = new DateTime('yesterday', $timezone);
 $yesterday_start->setTime(0, 0, 0);
 $yesterday_end = new DateTime('yesterday', $timezone);
@@ -24,8 +61,8 @@ $yesterday_end->setTimezone(new DateTimeZone('UTC'));
 $from_date = $yesterday_start->format('Y-m-d\TH:i:s\Z');
 $to_date = $yesterday_end->format('Y-m-d\TH:i:s\Z');
 
-
 try {
+    // Fetch Azupay report (keep original logic)
     $url_report = 'https://api.azupay.com.au/v1/report?clientId=c4cc3709d612d1e0e677833ffbcef703&fromDate=' . $from_date . '&toDate=' . $to_date . '&timezone=Australia/Sydney';
     $ch = curl_init($url_report);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -49,8 +86,7 @@ try {
         echo "❌ Report ID not found<br>";
     }
 
-
-
+    // Download report
     $url_download = 'https://api.azupay.com.au/v1/report/download?clientId=c4cc3709d612d1e0e677833ffbcef703&reportId=' . $reportId;
     $ch = curl_init($url_download);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -70,7 +106,7 @@ try {
         echo "❌ Report URL not found<br>";
     }
 
-
+    // Download CSV file
     $fileContent = '';
     if ($reportUrl) {
         $ch = curl_init($reportUrl);
@@ -83,10 +119,10 @@ try {
     }
 
     $report_name = 'azupay_report-' . $current_date_for_filename . '.csv';
-    $filePath = '/home/gaurat/public_html/csv_reports/' . $report_name;
+    $filePath = '/home/gt1ybwhome/public_html/csv_reports/' . $report_name;
     file_put_contents($filePath, $fileContent);
 
-
+    // Parse CSV
     $csvData = [];
     $headers = [];
 
@@ -124,13 +160,15 @@ try {
         $headers = ['DummyHeader'];
     }
 
-
+    // Check IP access using API
     $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-    
-
-    $query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup WHERE ip_address='$ip_address'";
-    $result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
-    $is_ip_matched = mysqli_num_rows($result_ip_selection);
+    $ipCheckResult = callAPI($base_url . '/azupay-settlement/check-ip', 'POST', ['ip_address' => $ip_address]);
+    $is_ip_matched = 0;
+    if ($ipCheckResult && isset($ipCheckResult['status']) && $ipCheckResult['status'] === 'success') {
+        if (isset($ipCheckResult['data']['has_access']) && $ipCheckResult['data']['has_access']) {
+            $is_ip_matched = 1;
+        }
+    }
 
     echo '<center><form action="#" name="statusupdate" method="post" enctype="multipart/form-data">';
     $tablestirng = "<table class='table table-striped' id='example' style='width:95%; font-size:13px;'>
@@ -146,365 +184,109 @@ try {
         $transaction = @array_combine($headers, $data);
         if (!$transaction || !isset($transaction['DateTime'])) continue;
 
-                    $transaction = array_combine($headers, $data);
-                    //print_r($transaction['AccountName']);
-                    echo '<pre>';
-                    print_r($transaction);
-                    echo '</pre>';
-                    //echo '</br>';
-                    //echo '</br>';
-                    
-                    $transaction_local_date = date('Y-m-d H:i:s', strtotime(substr($transaction['DateTime'], 0, 19)));
-                    
+        $transaction = array_combine($headers, $data);
+        echo '<pre>';
+        print_r($transaction);
+        echo '</pre>';
+        
+        $transaction_local_date = date('Y-m-d H:i:s', strtotime(substr($transaction['DateTime'], 0, 19)));
+        $new_transaction_date = substr($transaction['LocalTime'], 0, 19);
+        $crdr = $transaction['CRDR'];
+        $amount = number_format((float)$transaction['Amount'], 2, '.', '');
+        $payment_type_block = $transaction['TransactionType'];
+        $payid = $transaction['PayId'];
+        $payment_description = $transaction['PaymentDescription'];
+        $payment_customer_reference = $transaction['PayerPaymentReference'];
+        $payment_request_id_child = $transaction['TransactionId'];
+        $payment_request_id = $transaction['ParentTransactionId'];
+        $clientTransactionId = $transaction['ClientTransactionId'];
+        $NPPTransactionId = $transaction['NPPTransactionId'];
+        
+        $new_settlement_date = date("Y-m-d", strtotime("+1 days", strtotime($new_transaction_date))) . ' ' . date("H:i:s");
+        $payment_method_number = '7';
+        $autonumber++;
 
-                    $new_transaction_date = substr($transaction['LocalTime'], 0, 19);
-                    $crdr = $transaction['CRDR'];
-                    $amount = number_format((float)$transaction['Amount'], 2, '.', '');
-                    $payment_type_block = $transaction['TransactionType'];
-                    $payid = $transaction['PayId'];
-                    $payment_description = $transaction['PaymentDescription'];
-                    $payment_customer_reference = $transaction['PayerPaymentReference'];
-                    $payment_request_id_child = $transaction['TransactionId'];
-                    $payment_request_id = $transaction['ParentTransactionId'];
-                    $clientTransactionId = $transaction['ClientTransactionId'];
-                    $NPPTransactionId = $transaction['NPPTransactionId'];
-                    
-                    $new_settlement_date = date("Y-m-d", strtotime("+1 days", strtotime($new_transaction_date))) . ' ' . date("H:i:s");
-                    
-                    $payment_method_number = '7';
-            		$autonumber++;
-                    if($payment_type_block == 'PaymentRequest' && $payment_request_id != '')
-            							{
-            							    if($payment_request_id == '')
-            							    {
-            							        $payment_payid = $payid;
-            							        
-            							        $sql_payment_requests = "SELECT payment_request_id  FROM wpk4_backend_travel_booking_custom_payments where azupay_payid = '$payment_payid'";
-                            					$result_payment_requests = $mysqli->query($sql_payment_requests);
-                            					$row_payment_requests = $result_payment_requests->fetch_assoc();
-                            					$payment_request_id = $row_payment_requests['payment_request_id'];
-            							    }
-            							    
-            							    $order_id = '';
-            							    $sql_request_id = "SELECT order_id  FROM wpk4_backend_travel_payment_history where payment_request_id = '$payment_request_id'";
-                        					$result_request_id = $mysqli->query($sql_request_id);
-                        					$row_request_id = $result_request_id->fetch_assoc();
-                        					if ($result_request_id->num_rows > 0) 
-                    						{
-                        					    $order_id = $row_request_id['order_id'];
-                    						}
-            							    $order_id_from_booking_table = '';
-            							    $payment_status_from_booking_table = '';
-                							$sql = "SELECT order_id, payment_status FROM wpk4_backend_travel_bookings where order_id = '$order_id'";
-                    						$result = $mysqli->query($sql);
-                    						$row = $result->fetch_assoc();
-                    						if ($result->num_rows > 0) 
-                    						{
-                    						    $order_id_from_booking_table = $row['order_id'];
-                    						    $payment_status_from_booking_table = $row['payment_status'];
-                    						}
-                							$tablestirng.= "<tr>
-                								<td>".$autonumber."</td>
-                								<td>".$new_transaction_date."</td>
-                								<td>".$order_id."</td>
-                								<td>".$amount."</td>
-                								<td>".$payment_status_from_booking_table ."</td>
-                								<td>".$payment_description . ' ' . $payment_customer_reference ."</td>
-                								<td>".$new_settlement_date."</td>
-                								";
-                								
-                								$match = [];
-                								
-                								if($order_id == $order_id_from_booking_table)
-                								{
-                								    $is_booking_exists = true;
-                								}
-                								else 
-                								{
-                								    $is_booking_exists = false;
-                									$match[] = "<font style='color:red;'>Booking is not exist</font>";
-                								}
-                								$order_id_from_payment_table = '';
-                								$sql_2 = "SELECT order_id FROM wpk4_backend_travel_payment_history where payment_request_id = '$payment_request_id' AND CAST(trams_received_amount AS DECIMAL(10,2)) = CAST($amount AS DECIMAL(10,2)) AND payment_method = '7'";
-                    							$result_2 = $mysqli->query($sql_2);
-                    							$row_2 = $result_2->fetch_assoc();
-                    							if ($result_2->num_rows > 0) 
-                    							{
-                    							    $order_id_from_payment_table = $row_2['order_id'];
-            							        }
-                							
-                								if($order_id == $order_id_from_payment_table)
-                								{
-                									$match_hidden = 'Existing';
-                									if($is_booking_exists)
-                									{
-                									    $checked="checked";
-                									}
-                									else
-                									{
-                									    $checked="";
-                									}
-                								}
-                								else 
-                								{
-                									$match_hidden = 'New';
-                									$match[] = "<font style='color:red;'>Payment is not exist</font>";
-                									
-                									if($is_booking_exists)
-                									{
-                									    $checked="";
-                									}
-                									else
-                									{
-                									    $checked="";
-                									}
-                								}
-                								
-                							$tablestirng.= "<td><input type='hidden' name='".$autonumber."_matchmaker' value='".$match_hidden."'>";
-                							            if(isset($match[0]) && $match[0] != '')
-                							            {
-                							                $tablestirng.= $match[0];
-                							            }
-                							            
-                							            if(isset($match[1]) && $match[1] != '')
-                							            {
-                							                $tablestirng.= '</br></br>'.$match[1];
-                							            }
-                							 $tablestirng.= "</td>";
-                							$payment_request_id_new = $payment_request_id;										
-                							$tablestirng.="<td><input type='checkbox' id='chk".$autonumber."' 
-                							    name='".$autonumber."_checkoption' value='".$order_id."@#".$amount."@#".$new_transaction_date."@#".$order_id."@#".$payment_method_number."@#".$match_hidden."@#".$new_settlement_date."@#".$payment_request_id."' ".$checked." \/></td></tr>";
-                
-            							}
-            							
-            							if($payment_type_block == 'PaymentRequest' && $payment_request_id_child != '' && $payment_request_id == '')
-            							{
-            							    if($payment_request_id_child == '')
-            							    {
-            							        $payment_payid = $payid;
-            							        
-            							        $sql_payment_requests = "SELECT payment_request_id  FROM wpk4_backend_travel_booking_custom_payments where azupay_payid = '$payment_payid'";
-                            					$result_payment_requests = $mysqli->query($sql_payment_requests);
-                            					$row_payment_requests = $result_payment_requests->fetch_assoc();
-                            					$payment_request_id_child = $row_payment_requests['payment_request_id'];
-            							    }
-            							    
-            							    $order_id = '';
-            							    $sql_request_id = "SELECT order_id  FROM wpk4_backend_travel_payment_history where payment_request_id = '$payment_request_id_child'";
-                        					$result_request_id = $mysqli->query($sql_request_id);
-                        					$row_request_id = $result_request_id->fetch_assoc();
-                        					if ($result_request_id->num_rows > 0) 
-                    						{
-                        					    $order_id = $row_request_id['order_id'];
-                    						}
-            							    $order_id_from_booking_table = '';
-            							    $payment_status_from_booking_table = '';
-                							$sql = "SELECT order_id, payment_status FROM wpk4_backend_travel_bookings where order_id = '$order_id'";
-                    						$result = $mysqli->query($sql);
-                    						$row = $result->fetch_assoc();
-                    						if ($result->num_rows > 0) 
-                    						{
-                    						    $order_id_from_booking_table = $row['order_id'];
-                    						    $payment_status_from_booking_table = $row['payment_status'];
-                    						}
-                							$tablestirng.= "<tr>
-                								<td>".$autonumber."</td>
-                								<td>".$new_transaction_date."</td>
-                								<td>".$order_id."</td>
-                								<td>".$amount."</td>
-                								<td>".$payment_status_from_booking_table ."</td>
-                								<td>".$payment_description . ' ' . $payment_customer_reference ."</td>
-                								<td>".$new_settlement_date."</td>
-                								";
-                								
-                								$match = [];
-                								
-                								if($order_id == $order_id_from_booking_table)
-                								{
-                								    $is_booking_exists = true;
-                								}
-                								else 
-                								{
-                								    $is_booking_exists = false;
-                									$match[] = "<font style='color:red;'>Booking is not exist</font>";
-                								}
-                								$order_id_from_payment_table = '';
-                								$sql_2 = "SELECT order_id FROM wpk4_backend_travel_payment_history where payment_request_id = '$payment_request_id_child' AND CAST(trams_received_amount AS DECIMAL(10,2)) = CAST($amount AS DECIMAL(10,2)) AND payment_method = '7'";
-                    							$result_2 = $mysqli->query($sql_2);
-                    							$row_2 = $result_2->fetch_assoc();
-                    							if ($result_2->num_rows > 0) 
-                    							{
-                    							    $order_id_from_payment_table = $row_2['order_id'];
-            							        }
-                							
-                								if($order_id == $order_id_from_payment_table)
-                								{
-                									$match_hidden = 'Existing';
-                									if($is_booking_exists)
-                									{
-                									    $checked="checked";
-                									}
-                									else
-                									{
-                									    $checked="";
-                									}
-                								}
-                								else 
-                								{
-                									$match_hidden = 'New';
-                									$match[] = "<font style='color:red;'>Payment is not exist</font>";
-                									
-                									if($is_booking_exists)
-                									{
-                									    $checked="";
-                									}
-                									else
-                									{
-                									    $checked="";
-                									}
-                								}
-                								
-                							$tablestirng.= "<td><input type='hidden' name='".$autonumber."_matchmaker' value='".$match_hidden."'>";
-                							            if(isset($match[0]) && $match[0] != '')
-                							            {
-                							                $tablestirng.= $match[0];
-                							            }
-                							            
-                							            if(isset($match[1]) && $match[1] != '')
-                							            {
-                							                $tablestirng.= '</br></br>'.$match[1];
-                							            }
-                							 $tablestirng.= "</td>";
-                								$payment_request_id_new = $payment_request_id_child;									
-                							$tablestirng.="<td><input type='checkbox' id='chk".$autonumber."' 
-                							    name='".$autonumber."_checkoption' value='".$order_id."@#".$amount."@#".$new_transaction_date."@#".$order_id."@#".$payment_method_number."@#".$match_hidden."@#".$new_settlement_date."@#".$payment_request_id_child."' ".$checked." \/></td></tr>";
-                
-            							}
-            							if($payment_type_block == 'Payment' && $payment_request_id_child != '')
-            							{
+        // Process transaction using API
+        $processResult = callAPI($base_url . '/azupay-settlement/process-transaction', 'POST', [
+            'transaction' => $transaction
+        ]);
 
-            							    $order_id = '';
-            							    $sql_request_id = "SELECT order_id  FROM wpk4_backend_travel_payment_history where payment_request_id = '$payment_request_id_child'";
-                        					$result_request_id = $mysqli->query($sql_request_id);
-                        					$row_request_id = $result_request_id->fetch_assoc();
-                        					if ($result_request_id->num_rows > 0) 
-                    						{
-                        					    $order_id = $row_request_id['order_id'];
-                    						}
-            							    $order_id_from_booking_table = '';
-            							    $payment_status_from_booking_table = '';
-                							$sql = "SELECT order_id, payment_status FROM wpk4_backend_travel_bookings where order_id = '$order_id'";
-                    						$result = $mysqli->query($sql);
-                    						$row = $result->fetch_assoc();
-                    						if ($result->num_rows > 0) 
-                    						{
-                    						    $order_id_from_booking_table = $row['order_id'];
-                    						    $payment_status_from_booking_table = $row['payment_status'];
-                    						}
-                							$tablestirng.= "<tr>
-                								<td>".$autonumber."</td>
-                								<td>".$new_transaction_date."</td>
-                								<td>".$order_id."</td>
-                								<td>".$amount."</td>
-                								<td>".$payment_status_from_booking_table ."</td>
-                								<td>".$payment_description . ' ' . $payment_customer_reference ."</td>
-                								<td>".$new_settlement_date."</td>
-                								";
-                								
-                								$match = [];
-                								
-                								if($order_id == $order_id_from_booking_table)
-                								{
-                								    $is_booking_exists = true;
-                								}
-                								else 
-                								{
-                								    $is_booking_exists = false;
-                									$match[] = "<font style='color:red;'>Booking is not exist</font>";
-                								}
-                								$order_id_from_payment_table = '';
-                								
-                								$negative_amount = '-'.$amount;
-                								if($crdr == 'DR')
-                								{
-                								    $amount = $negative_amount;
-                								}
-                								$sql_2 = "SELECT order_id FROM wpk4_backend_travel_payment_history where payment_request_id = '$payment_request_id_child' AND CAST(trams_received_amount AS DECIMAL(10,2)) = CAST($negative_amount AS DECIMAL(10,2)) AND payment_method = '7'";
-                    							$result_2 = $mysqli->query($sql_2);
-                    							$row_2 = $result_2->fetch_assoc();
-                    							if ($result_2->num_rows > 0) 
-                    							{
-                    							    $order_id_from_payment_table = $row_2['order_id'];
-            							        }
-                							
-                								if($order_id == $order_id_from_payment_table)
-                								{
-                									$match_hidden = 'Existing';
-                									if($is_booking_exists)
-                									{
-                									    $checked="checked";
-                									}
-                									else
-                									{
-                									    $checked="";
-                									}
-                								}
-                								else 
-                								{
-                									$match_hidden = 'New';
-                									$match[] = "<font style='color:red;'>Payment is not exist</font>";
-                									
-                									if($is_booking_exists)
-                									{
-                									    $checked="";
-                									}
-                									else
-                									{
-                									    $checked="";
-                									}
-                								}
-                								
-                							$tablestirng.= "<td><input type='hidden' name='".$autonumber."_matchmaker' value='".$match_hidden."'>";
-                							            if(isset($match[0]) && $match[0] != '')
-                							            {
-                							                $tablestirng.= $match[0];
-                							            }
-                							            
-                							            if(isset($match[1]) && $match[1] != '')
-                							            {
-                							                $tablestirng.= '</br></br>'.$match[1];
-                							            }
-                							 $tablestirng.= "</td>";
-                								$payment_request_id_new = $payment_request_id_child;							
-                							$tablestirng.="<td><input type='checkbox' id='chk".$autonumber."' 
-                							    name='".$autonumber."_checkoption' value='".$order_id."@#".$negative_amount."@#".$new_transaction_date."@#".$order_id."@#".$payment_method_number."@#".$match_hidden."@#".$new_settlement_date."@#".$payment_request_id_child."' ".$checked." \/></td></tr>";
+        if ($processResult && isset($processResult['status']) && $processResult['status'] === 'success') {
+            $processData = $processResult['data'];
+            $order_id = $processData['order_id'] ?? '';
+            $order_id_from_booking_table = $processData['order_id_from_booking'] ?? '';
+            $payment_status_from_booking_table = $processData['payment_status'] ?? '';
+            $match_hidden = $processData['match_status'] ?? 'New';
+            $is_booking_exists = $processData['is_booking_exists'] ?? false;
+            $match_messages = $processData['match_messages'] ?? [];
+            $payment_request_id_new = $processData['payment_request_id'] ?? $payment_request_id ?? $payment_request_id_child;
+
+            // Handle negative amount for DR transactions
+            $display_amount = $amount;
+            if ($payment_type_block == 'Payment' && $crdr == 'DR') {
+                $display_amount = '-' . $amount;
+            }
+
+            $tablestirng .= "<tr>
+                <td>" . $autonumber . "</td>
+                <td>" . $new_transaction_date . "</td>
+                <td>" . $order_id . "</td>
+                <td>" . $display_amount . "</td>
+                <td>" . $payment_status_from_booking_table . "</td>
+                <td>" . $payment_description . ' ' . $payment_customer_reference . "</td>
+                <td>" . $new_settlement_date . "</td>
+            ";
+
+            $match = [];
+            if (!$is_booking_exists) {
+                $match[] = "<font style='color:red;'>Booking is not exist</font>";
+            }
+            if ($match_hidden == 'New') {
+                $match[] = "<font style='color:red;'>Payment is not exist</font>";
+            }
+            if (!empty($match_messages)) {
+                $match = array_merge($match, $match_messages);
+            }
+
+            $checked = ($is_booking_exists && $match_hidden == 'Existing') ? 'checked' : '';
+
+            $tablestirng .= "<td><input type='hidden' name='" . $autonumber . "_matchmaker' value='" . $match_hidden . "'>";
+            if (isset($match[0]) && $match[0] != '') {
+                $tablestirng .= $match[0];
+            }
+            if (isset($match[1]) && $match[1] != '') {
+                $tablestirng .= '</br></br>' . $match[1];
+            }
+            $tablestirng .= "</td>";
+
+            // Update reconciliation using API
+            if ($payment_type_block == 'PaymentRequest' || $payment_type_block == 'Payment') {
+                $transaction_date_without_seconds = substr($new_transaction_date, 0, 10);
                 
-            							}
-            							
-            							
-            				if($payment_type_block == 'PaymentRequest' || $payment_type_block == 'Payment' )
-            				{
-            				    
-            				
-            							
-            					$transaction_date_without_seconds = substr($new_transaction_date, 0, 10);
-        						    
-        						$payment_additional_stack = " AND order_id = '$order_id' AND payment_request_id = '".$payment_request_id_new."' AND date(process_date) = '" . $transaction_date_without_seconds . "' ";
-        						
-                                $sql_update_status = "UPDATE wpk4_backend_travel_payment_history SET 
-                							is_reconciliated = 'yes',
-                							cleared_date = '$new_settlement_date',
-                							cleared_by = 'azupay_settlement_api'
-            							WHERE ( CAST(trams_received_amount AS DECIMAL(10,2)) = CAST('$amount' AS DECIMAL(10,2)) ) AND cleared_date is null and cleared_by is null and payment_method = '$payment_method_number' $payment_additional_stack";
-            							
-            					    echo $sql_update_status.'</br></br>';
-            		           
-            		           $result_status= mysqli_query($mysqli,$sql_update_status) or die(mysqli_error($mysqli));
-            				}
-            						
+                $updateResult = callAPI($base_url . '/azupay-settlement/update-reconciliation', 'POST', [
+                    'order_id' => $order_id,
+                    'payment_request_id' => $payment_request_id_new,
+                    'transaction_date' => $new_transaction_date,
+                    'amount' => $display_amount,
+                    'settlement_date' => $new_settlement_date,
+                    'payment_method' => $payment_method_number
+                ]);
+
+                if ($updateResult && isset($updateResult['status']) && $updateResult['status'] === 'success') {
+                    echo "✅ Reconciliation updated for order: $order_id<br>";
+                } else {
+                    $errorMsg = $updateResult['message'] ?? 'Unknown error';
+                    echo "⚠️ Failed to update reconciliation for order: $order_id - $errorMsg<br>";
                 }
-                
-    
+            }
+
+            $tablestirng .= "<td><input type='checkbox' id='chk" . $autonumber . "' 
+                name='" . $autonumber . "_checkoption' value='" . $order_id . "@#" . $display_amount . "@#" . $new_transaction_date . "@#" . $order_id . "@#" . $payment_method_number . "@#" . $match_hidden . "@#" . $new_settlement_date . "@#" . $payment_request_id_new . "' " . $checked . " /></td></tr>";
+        } else {
+            $errorMsg = $processResult['message'] ?? 'Unknown error';
+            echo "⚠️ Failed to process transaction: $errorMsg<br>";
+        }
+    }
 
     $tablestirng .= '</table></form></center>';
     echo $tablestirng;
@@ -512,7 +294,6 @@ try {
 } catch (Exception $e) {
     echo "Error: " . $e->getMessage();
 }
-
 
 $html_output = ob_get_clean();
 $response_data = [
