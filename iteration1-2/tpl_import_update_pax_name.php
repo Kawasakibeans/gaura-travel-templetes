@@ -1,0 +1,185 @@
+<?php
+/**
+ * Template Name: Import Update Pax Names
+ * Template Post Type: post, page
+ *
+ * @package WordPress
+ * @subpackage Twenty_Twenty
+ * @since Twenty Twenty 1.0
+ */
+get_header();?>
+<div class='wpb_column vc_column_container vc_col-sm-12' id='manage_bookings' style='width:95%;margin:auto;padding:100px 0px;'>
+<?php
+date_default_timezone_set("Australia/Melbourne"); 
+error_reporting(E_ALL);
+include("wp-config-custom.php");
+$current_time = date('Y-m-d H:i:s');
+
+$query_ip_selection = "SELECT * FROM wpk4_backend_ip_address_checkup where ip_address='$ip_address'";
+$result_ip_selection = mysqli_query($mysqli, $query_ip_selection);
+$row_ip_selection = mysqli_fetch_assoc($result_ip_selection);
+$is_ip_matched = mysqli_num_rows($result_ip_selection);
+if($row_ip_selection['ip_address'] == $ip_address)
+{
+
+    global $current_user;
+    $currnt_userlogn = $current_user->user_login;
+    
+    if(current_user_can( 'administrator' ) || current_user_can( 'ho_operations' ))
+    {
+        if(!isset($_GET['pg']))
+	    {
+	    ?>
+		<center>
+		</br></br></br>
+		<form class="form-horizontal" action="?pg=check" method="post" name="uploadCSV" enctype="multipart/form-data">
+			<div class="input-row">
+				<label class="col-md-4 control-label">Choose CSV File</label>
+				<a href="https://gauratravel.com.au/wp-content/uploads/2024/11/import_pax_name_update.csv" style="font-size:12px; ">Download Template</a></br></br>
+				<input type="file" required name="file" id="file" accept=".csv" style="display:block;">
+				<input type="submit" id="submit" style='height:30px; width:70px; font-size:12px; padding:7px; margin:0px;' name="import_pricing"></input>
+				<br />
+			</div>
+			<div id="labelError"></div>
+		</form>
+		</center>
+        <?php
+	    }
+	    
+        if(isset($_GET['pg']) && $_GET['pg'] == 'check')
+	    {
+    		// IMPORT PRICING START
+    		if (isset($_POST["import_pricing"])) 
+    			{
+    				$fileName = $_FILES["file"]["tmp_name"];
+    				if ($_FILES["file"]["size"] > 0) 
+    				{
+    					$file = fopen($fileName, "r");
+    					echo '<center><form action="#" name="statusupdate" method="post" enctype="multipart/form-data">';
+    					$tablestirng="<table class='table table-striped' id='example' style='width:95%; font-size:13px;'>
+    					<tr>
+    						<td>#</td>
+    						<td>Auto ID</td>
+    						<td>FNAME</td>
+    						<td>LNAME</td>
+    						<td>Existing/New</td>
+    						<td></td>
+    					</tr>
+    					";
+    					$autonumber = 1;
+    					
+    					while (($column = fgetcsv($file, 10000, ",")) !== FALSE) 
+    					{
+    					    $non_matching_reasons = '';
+    					    $is_matched_any_condition = 0;
+    						if($column[0] == 'id' && $column[1] == 'fname')
+    						{
+    							// Do Nothing
+    						}
+    						else
+    						{
+    							$auto_id = $column[0];
+    							$pnr = $column[1];
+    							$ticketno = $column[2];
+
+    							$sql = "SELECT * FROM wpk4_backend_travel_booking_pax where auto_id = '$auto_id'";
+    							$result = $mysqli->query($sql);
+    							$row = $result->fetch_assoc();
+    							
+    							$order_id_from_table = $row['order_id'];
+    							$auto_id_from_table = $row['auto_id'];
+    							
+    							
+    								$tablestirng.= "<tr>
+    								<td>".$autonumber."</td>
+    								<td>".$auto_id."</td>
+    								<td>".$pnr."</td>
+    								";
+    									
+    									if($auto_id == $auto_id_from_table)
+    										{
+    											$match_hidden = 'Existing';
+    											$match= "Existing";
+    											$checked="checked";
+    										}
+    									else 
+    										{
+    											$match_hidden = 'New';
+    											$match = "<font style='color:red;'>New Record</font>";
+    											$checked="disabled";
+    										}
+    									
+    								$tablestirng.= "		
+    									<td>								
+    									<input type='hidden' name='".$auto_id."_matchmaker' value='".$match_hidden."'>
+    									".$match."</td>";
+    																	
+    									$tablestirng.="<td><input type='checkbox' id='chk".$auto_id."' name='".$auto_id."_checkoption' value='".$auto_id."@#".$pnr."@#".$ticketno."@#".$match_hidden."' ".$checked." \/></td>
+    									</tr>";
+    
+    							$autonumber++;
+    						}
+    					}
+    					
+    					$tablestirng.= "</table>";
+    					echo $tablestirng;
+    					?>
+    					<br><br><input type="submit" name="submit_pricing" value="Update"/></form></center>
+    					<?php
+    				}
+    			}
+    			if (isset($_POST["submit_pricing"])) 
+    			{
+    				foreach ($_POST as $post_fieldname => $post_fieldvalue) 
+    				{
+    					$post_name_dividants = explode('_', $post_fieldname);
+    					$postname_auto_id = $post_name_dividants[0];
+						$postname_fieldname = $post_name_dividants[1];
+    					$check_whether_its_ticked = $postname_auto_id.'_checkoption';
+    					
+    					if($postname_fieldname == 'checkoption' && isset($_POST[$check_whether_its_ticked]))
+    					{
+    						$post_value_get = $_POST[$post_fieldname];
+    						$post_values = explode('@#', $post_value_get);
+    							$auto_id_from_table_post = $post_values[0];	
+								$pnr_post = $post_values[1];
+								$ticketno_post = $post_values[2];
+								$match_hidden_post = $post_values[3];
+    						    
+    						    $sql_update_status = "UPDATE wpk4_backend_travel_booking_pax SET 
+    												fname='$pnr_post',
+    												lname='$ticketno_post'
+    												WHERE auto_id='$auto_id_from_table_post'";
+    							$result_status= mysqli_query($mysqli,$sql_update_status) or die(mysqli_error($mysqli));
+    						
+    					
+    						$values = array(
+    						array($auto_id_from_table_post, "fname", $pnr_post, $currnt_userlogn, $current_time),
+    						array($auto_id_from_table_post, "lname", $ticketno_post, $currnt_userlogn, $current_time)
+    						);
+    
+    						// Loop through the array and insert each row into the database
+    						foreach ($values as $row) {
+    							$type_id = $row[0];
+    							$meta_key = $row[1];
+    							$meta_value = $row[2];
+    							$updated_by = $row[3];
+    							$updated_on = $row[4];
+    
+    							mysqli_query($mysqli,"insert into wpk4_backend_history_of_updates (type_id, meta_key, meta_value, updated_by, updated_on) values ('$type_id', '$meta_key', '$meta_value', '$updated_by', '$updated_on')") or die(mysqli_error($mysqli));	
+    						}
+    					}
+    				}
+    				echo '<script>alert("Updated successfully.");</script>';
+    				echo '<script>window.location.href="?";</script>';
+    			}
+    		}
+    }
+}
+else
+{
+echo "<center>This page is not accessible for you.</center>";
+}
+?>
+</div>
+<?php get_footer(); ?>
